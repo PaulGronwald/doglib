@@ -27,3 +27,20 @@ ax.plot(f, v)
 ax.grid_diagonal(True)
 plt.show()
 ```
+
+## Interactive 6-panel gallery
+
+Opens a TkAgg/Qt window with six different configurations (seismic, DPlot,
+SI units, extreme-range, narrow-zoom, minimalist shock). Scroll wheel = zoom
+at cursor, left-drag = pan. Blit-accelerated so all six panels stay
+responsive.
+
+```bash
+python scripts/gallery_viewer.py
+```
+
+A static version that writes `examples/gallery.png` instead:
+
+```bash
+python examples/gallery.py
+```

@@ -179,7 +179,12 @@ def test_set_displacement_label_updates():
 
 
 def test_label_rotation_matches_display_angle():
-    fig, ax = _mk()
+    # Use midpoint label_mode so _disp_labels is populated; the rotation
+    # math is the same surface either way.
+    fig, ax = plt.subplots(
+        subplot_kw={"projection": "tripartite", "label_mode": "midpoint"},
+    )
+    ax.set_xlim(1, 1000); ax.set_ylim(0.1, 100)
     fig.canvas.draw()
     assert len(ax._disp_labels) > 0
     # pick first disp segment, recompute expected angle, compare
@@ -189,7 +194,6 @@ def test_label_rotation_matches_display_angle():
     p1 = ax.transData.transform((f1, v1))
     expected = np.degrees(np.arctan2(p1[1] - p0[1], p1[0] - p0[0]))
     actual = ax._disp_labels[0].get_rotation()
-    # rotation is stored in [0, 360) by matplotlib's Text; normalize
     diff = (expected - actual + 180) % 360 - 180
     assert abs(diff) < 0.01
     plt.close(fig)

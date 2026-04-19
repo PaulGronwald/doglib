@@ -1,6 +1,13 @@
-"""Interactive 6-panel gallery viewer - same content as examples/gallery.py
-but opens in a TkAgg window instead of saving to PNG."""
+"""Interactive 6-panel gallery — tour of triplot features.
+
+Panels showcase the configuration space: style presets, unit systems,
+aspect lock vs squish, the three label modes, and the big axis-title
+toggle. Every panel is independently zoomable (scroll) and pannable
+(left-drag); the isolines recompute on every view change.
+"""
 from __future__ import annotations
+
+import math
 
 import matplotlib
 for _b in ("TkAgg", "Qt5Agg", "QtAgg"):
@@ -13,7 +20,7 @@ for _b in ("TkAgg", "Qt5Agg", "QtAgg"):
 import matplotlib.pyplot as plt
 import numpy as np
 
-import triplot  # noqa: F401
+import triplot  # noqa: F401 — registers projection
 
 
 def srs(f, fn, zeta):
@@ -22,49 +29,70 @@ def srs(f, fn, zeta):
     return mag * (fn * 0.5)
 
 
-fig = plt.figure(figsize=(18, 11))
+fig = plt.figure(figsize=(20, 12))
 
+# ─── Panel 1: default — label_mode='edge' + seismic titles ──────────────
 ax1 = fig.add_subplot(2, 3, 1, projection="tripartite", style="seismic")
 ax1.set_xlim(1, 1000); ax1.set_ylim(0.1, 100)
 f = np.logspace(0, 3, 400)
-ax1.plot(f, srs(f, 30, 0.05) * 0.4, color="#c0392b", lw=1.6)
-ax1.set_title("(1) Seismic - single SRS")
+ax1.plot(f, srs(f, 30, 0.05) * 0.4, color="#c0392b", lw=1.6, label="SRS")
+ax1.set_title("(1) default — label_mode='edge', seismic titles")
+ax1.legend(loc="lower left", fontsize=8)
 
-ax2 = fig.add_subplot(2, 3, 2, projection="tripartite", style="dplot")
+# ─── Panel 2: label_mode='edge' + no titles — cleanest look ─────────────
+ax2 = fig.add_subplot(
+    2, 3, 2, projection="tripartite",
+    style="dplot", label_mode="edge", show_diag_titles=False,
+)
 ax2.set_xlim(0.1, 1000); ax2.set_ylim(0.001, 10)
 f = np.logspace(-1, 3, 400)
 for z, c, lbl in [(0.001, "red", "Undamped"), (0.05, "green", "5%"), (0.10, "blue", "10%")]:
     ax2.plot(f, srs(f, 3, z) * 0.2, color=c, lw=1.2, label=lbl)
-ax2.set_title("(2) DPlot - damping overlay")
+ax2.set_title("(2) label_mode='edge', titles off  (cleanest)")
 ax2.legend(loc="lower center", fontsize=8)
 
-ax3 = fig.add_subplot(2, 3, 3, projection="tripartite", style="dplot", units="SI")
+# ─── Panel 3: label_mode='midpoint' — classic tripartite look ────────────
+ax3 = fig.add_subplot(
+    2, 3, 3, projection="tripartite",
+    style="dplot", units="SI", label_mode="midpoint",
+)
 ax3.set_xlim(0.1, 100); ax3.set_ylim(0.01, 10)
 f = np.logspace(-1, 2, 400)
 ax3.plot(f, srs(f, 2, 0.05) * 0.5, color="#2980b9", lw=1.6)
-ax3.set_title("(3) SI units - civil range")
+ax3.set_title("(3) label_mode='midpoint' + SI  (classic, no edges)")
 
-ax4 = fig.add_subplot(2, 3, 4, projection="tripartite", style="dplot")
-ax4.set_xlim(1e-3, 1e7); ax4.set_ylim(1e-4, 1e5)
-ax4.set_title("(4) Extreme range - 10 decades")
+# ─── Panel 4: aspect='auto' — squished wide panel ────────────────────────
+ax4 = fig.add_subplot(
+    2, 3, 4, projection="tripartite",
+    style="dplot", aspect="auto", show_diag_titles=False,
+)
+ax4.set_xlim(1, 1000); ax4.set_ylim(0.1, 100)
+f = np.logspace(0, 3, 400)
+ax4.plot(f, srs(f, 30, 0.05) * 0.4, color="#16a085", lw=1.6)
+ax4.set_title("(4) aspect='auto'  (fills panel; diagonals re-angle)")
 
+# ─── Panel 5: narrow zoom exercising the fallback labels ────────────────
 ax5 = fig.add_subplot(2, 3, 5, projection="tripartite", style="seismic")
-ax5.set_xlim(20, 80); ax5.set_ylim(5, 20)
-f = np.linspace(20, 80, 200)
-ax5.plot(f, srs(f, 30, 0.03) * 0.4, color="#8e44ad", lw=1.6)
-ax5.set_title("(5) Narrow zoom - single decade")
+ax5.set_xlim(100, 300); ax5.set_ylim(1, 30)
+f = np.linspace(100, 300, 200)
+ax5.plot(f, srs(f, 150, 0.03) * 0.4, color="#8e44ad", lw=1.6)
+ax5.set_title("(5) fallback labels  (lines missing top edge get right-side labels)")
 
+# ─── Panel 6: shock style, minimalist ────────────────────────────────────
 ax6 = fig.add_subplot(2, 3, 6, projection="tripartite", style="shock")
 ax6.set_xlim(1, 1000); ax6.set_ylim(0.1, 100)
 f = np.logspace(0, 3, 400)
-ax6.plot(f, srs(f, 50, 0.05) * 0.4, color="#16a085", lw=1.6)
-ax6.set_title("(6) Shock - minimalist")
+ax6.plot(f, srs(f, 50, 0.05) * 0.4, color="#d35400", lw=1.6)
+ax6.set_title("(6) style='shock'  (sparse decade grid)")
 
-fig.suptitle("triplot gallery - 6 use cases  (scroll = zoom, drag = pan)", fontsize=14)
-fig.tight_layout()
+fig.suptitle(
+    "triplot gallery — scroll = zoom, drag = pan. Each panel recomputes live.",
+    fontsize=13,
+)
+fig.tight_layout(rect=(0, 0, 1, 0.96))
 
-# ---- interactive zoom / pan across ALL panels -------------------------------
-import math
+
+# ─── Interactive zoom / pan across ALL panels ───────────────────────────
 
 def on_scroll(event):
     ax = event.inaxes
@@ -80,7 +108,9 @@ def on_scroll(event):
     ax.set_ylim(10 ** (ly - (ly - ly0) * scale), 10 ** (ly + (ly1 - ly) * scale))
     fig.canvas.draw_idle()
 
+
 state = {"ax": None, "x": None, "y": None, "bg": None}
+
 
 def on_press(event):
     if event.inaxes is None or event.button != 1 or event.xdata is None:
@@ -94,6 +124,7 @@ def on_press(event):
     state["y"] = event.ydata
     fig.canvas.draw()
     state["bg"] = fig.canvas.copy_from_bbox(fig.bbox)
+
 
 def on_motion(event):
     ax = state["ax"]
@@ -111,10 +142,12 @@ def on_motion(event):
     else:
         fig.canvas.draw_idle()
 
+
 def on_release(event):
     state["ax"] = None
     state["bg"] = None
     fig.canvas.draw_idle()
+
 
 fig.canvas.mpl_connect("scroll_event", on_scroll)
 fig.canvas.mpl_connect("button_press_event", on_press)

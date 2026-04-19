@@ -68,5 +68,5 @@ ax6.set_title("(6) Shock style - minimalist (1 line/decade)")
 
 fig.suptitle("triplot gallery - 6 use cases of the tripartite projection", fontsize=14, y=1.00)
 fig.tight_layout()
-fig.savefig(r"C:\Users\pmarq\source\repos\triplot\examples\gallery.png", dpi=110, bbox_inches="tight")
+fig.savefig(r"gallery.png", dpi=110, bbox_inches="tight")
 print("wrote gallery.png")

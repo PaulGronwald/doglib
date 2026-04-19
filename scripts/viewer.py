@@ -35,7 +35,9 @@ def srs_curve(f, fn=3.0, zeta=0.05):
 def main():
     fig, ax = plt.subplots(
         figsize=(9, 9),
-        subplot_kw={"projection": "tripartite", "style": "dplot"},
+        # aspect="auto" lets the plot be squished (asymmetric zoom and window
+        # resize). Drop it or pass aspect="equal" for locked 45° diagonals.
+        subplot_kw={"projection": "tripartite", "style": "dplot", "aspect": "auto"},
     )
     ax.set_xlim(0.1, 1000)
     ax.set_ylim(0.001, 10)

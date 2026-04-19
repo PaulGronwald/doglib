@@ -8,3 +8,6 @@ __pycache__/
 dist/
 build/
 .venv/
+
+# Generated-at-runtime outputs from example scripts
+/gallery.png

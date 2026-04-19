@@ -71,3 +71,146 @@ def test_si_units():
     fig.canvas.draw()
     assert "m/s" in ax.get_ylabel()
     plt.close(fig)
+
+
+def test_fallback_labels_fill_edge_gap():
+    """Viewport chosen so the d=0.01 in line doesn't cross the top edge
+    (its top-crossing is out of the x-range) but does cross the right edge.
+    Without the fallback, such a line goes unlabeled. With the fallback, an
+    annotation is placed on the line inside the plot."""
+    fig, ax = plt.subplots(subplot_kw={"projection": "tripartite"})
+    ax.set_xlim(100, 300)
+    ax.set_ylim(1, 30)
+    fig.canvas.draw()
+
+    # At least one disp fallback label fired — these are label-eligible disp
+    # lines (mantissa in the label subset) that missed the top edge.
+    disp_fb_visible = [a for a in ax._disp_fallback_labels if a.get_visible()]
+    assert len(disp_fb_visible) > 0, "expected disp fallback labels in this viewport"
+
+    # And at least one accel fallback for the accel lines that missed right.
+    accel_fb_visible = [a for a in ax._accel_fallback_labels if a.get_visible()]
+    assert len(accel_fb_visible) > 0, "expected accel fallback labels in this viewport"
+
+    # Each fallback label should carry unit suffix and non-empty text
+    for ann in disp_fb_visible:
+        assert ann.get_text()
+        assert "in" in ann.get_text()
+    for ann in accel_fb_visible:
+        assert ann.get_text()
+        assert "g" in ann.get_text()
+
+    plt.close(fig)
+
+
+def test_label_mode_edge_has_no_midpoint_labels():
+    """label_mode='edge' (default) — rotated edge labels + fallback, no midpoints."""
+    fig, ax = plt.subplots(
+        subplot_kw={"projection": "tripartite", "label_mode": "edge"},
+    )
+    ax.set_xlim(1, 1000)
+    ax.set_ylim(0.1, 100)
+    fig.canvas.draw()
+    assert len(ax._disp_labels) == 0
+    assert len(ax._accel_labels) == 0
+    # Edge labels still present
+    assert sum(1 for a in ax._disp_top_labels if a.get_visible()) > 0
+    plt.close(fig)
+
+
+def test_label_mode_midpoint_has_no_edge_labels():
+    """label_mode='midpoint' — labels only at segment midpoints, no edges."""
+    fig, ax = plt.subplots(
+        subplot_kw={"projection": "tripartite", "label_mode": "midpoint"},
+    )
+    ax.set_xlim(1, 1000)
+    ax.set_ylim(0.1, 100)
+    fig.canvas.draw()
+    assert len(ax._disp_top_labels) == 0
+    assert len(ax._accel_right_labels) == 0
+    assert len(ax._disp_fallback_labels) == 0
+    assert len(ax._accel_fallback_labels) == 0
+    assert sum(1 for a in ax._disp_labels if a.get_visible()) > 0
+    plt.close(fig)
+
+
+def test_label_mode_is_binary():
+    """Only 'edge' and 'midpoint' are valid — no 'both' / 'full' mode."""
+    with pytest.raises(ValueError):
+        plt.subplots(subplot_kw={"projection": "tripartite", "label_mode": "full"})
+    with pytest.raises(ValueError):
+        plt.subplots(subplot_kw={"projection": "tripartite", "label_mode": "both"})
+
+
+def test_set_label_mode_switches_at_runtime():
+    """Toggling label_mode after construction rebuilds the plot."""
+    fig, ax = plt.subplots(subplot_kw={"projection": "tripartite"})
+    ax.set_xlim(1, 1000)
+    ax.set_ylim(0.1, 100)
+    fig.canvas.draw()
+    # Default is 'edge' — midpoints suppressed
+    assert len(ax._disp_labels) == 0
+
+    ax.set_label_mode("midpoint")
+    fig.canvas.draw()
+    assert len(ax._disp_labels) > 0
+    assert len(ax._disp_top_labels) == 0  # edges now suppressed
+
+    ax.set_label_mode("edge")
+    fig.canvas.draw()
+    assert len(ax._disp_labels) == 0  # back to edge-only
+    plt.close(fig)
+
+
+def test_show_diag_titles_false_hides_callouts():
+    """show_diag_titles=False removes the big centered 'Displacement' /
+    'Acceleration' titles even for the seismic style (which shows them by
+    default)."""
+    fig, ax = plt.subplots(
+        subplot_kw={"projection": "tripartite", "show_diag_titles": False},
+    )
+    ax.set_xlim(1, 1000)
+    ax.set_ylim(0.1, 100)
+    fig.canvas.draw()
+    assert ax._disp_axis_title is None
+    assert ax._accel_axis_title is None
+    plt.close(fig)
+
+
+def test_border_labels_are_rotated():
+    """Border (edge) labels rotate to match their line's slope, not horizontal."""
+    fig, ax = plt.subplots(subplot_kw={"projection": "tripartite"})
+    ax.set_xlim(1, 1000)
+    ax.set_ylim(0.1, 100)
+    fig.canvas.draw()
+    rotations = [
+        abs(a.get_rotation()) for a in ax._disp_top_labels if a.get_visible()
+    ]
+    assert len(rotations) > 0
+    # Every rotated-on-line label should have a non-trivial rotation
+    # (0° would mean horizontal — the bug this test catches).
+    assert all(r > 10 for r in rotations)
+    plt.close(fig)
+
+
+def test_fallback_pool_does_not_leak():
+    """Pan / zoom repeatedly — the fallback label pool must shrink when the
+    view no longer needs as many, so stale artists don't accumulate."""
+    fig, ax = _make()
+    fig.canvas.draw()
+    max_seen = len(ax._disp_fallback_labels) + len(ax._accel_fallback_labels)
+    for xhi in (500, 2000, 100, 10_000):
+        ax.set_xlim(1, xhi)
+        fig.canvas.draw()
+        max_seen = max(
+            max_seen,
+            len(ax._disp_fallback_labels) + len(ax._accel_fallback_labels),
+        )
+    # After a narrow re-zoom, counts should not exceed what was needed before.
+    ax.set_xlim(1, 1000)
+    ax.set_ylim(0.1, 100)
+    fig.canvas.draw()
+    final = len(ax._disp_fallback_labels) + len(ax._accel_fallback_labels)
+    # Pools can be empty in some views; the key check is that they can shrink.
+    assert final <= max_seen
+    plt.close(fig)

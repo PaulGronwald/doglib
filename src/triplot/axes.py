@@ -20,10 +20,11 @@ import math
 import warnings
 
 import numpy as np
+from matplotlib import patheffects
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
-from matplotlib.text import Text
+from matplotlib.text import Annotation, Text
 from matplotlib.transforms import blended_transform_factory
 
 from . import diagonals as _diag
@@ -55,6 +56,13 @@ _EDGE_LABEL_HALO_BBOX = dict(
 _LABEL_HALO_BBOX = dict(
     boxstyle="square,pad=0.10", facecolor="white", edgecolor="none",
 )
+# Stroke effect for labels drawn OVER the diagonal grid (inside the plot):
+# a thin white outline around each glyph keeps text readable over complex
+# backgrounds without erasing a rectangular region the way a bbox halo does.
+_INSIDE_LABEL_STROKE = [
+    patheffects.withStroke(linewidth=2.0, foreground="white"),
+    patheffects.Normal(),
+]
 _AXIS_TITLE_STYLE = dict(
     color="0.05", fontsize=10, ha="center", va="center",
     family="serif", fontstyle="italic", fontweight="bold",
@@ -92,7 +100,16 @@ class TripartiteAxes(Axes):
 
     # ------------------------------------------------------------------ init
 
-    def __init__(self, *args, units=None, style="seismic", **kwargs):
+    def __init__(
+        self,
+        *args,
+        units=None,
+        style="seismic",
+        aspect="equal",
+        label_mode="edge",
+        show_diag_titles=None,
+        **kwargs,
+    ):
         self._units: UnitSystem = _resolve_units(units)
         self._diag_visible = True
         # style: 'seismic' (Frazee/Newmark-Hall), 'shock' (sparse), or 'dplot'
@@ -100,6 +117,27 @@ class TripartiteAxes(Axes):
         if style not in ("seismic", "shock", "dplot"):
             raise ValueError("style must be 'seismic', 'shock', or 'dplot'")
         self._style = style
+        # aspect: 'equal' keeps one decade of x == one decade of y (true 45°
+        # diagonals). 'auto' lets the axes stretch independently in x/y so the
+        # plot can be squished into a wide or tall box. Label rotation is
+        # computed in display space either way, so the diagonals stay
+        # visually aligned with their labels at any aspect.
+        # Stored under a non-reserved name — matplotlib's Axes owns self._aspect.
+        self._tri_aspect = aspect
+        # label_mode: binary choice for where diagonal-isoline labels appear.
+        #   'edge'     — rotated labels at each line's edge crossing (outside
+        #                by default; flipped inside on overflow). Every in-view
+        #                line gets labeled once; clean interior. (default)
+        #   'midpoint' — labels at each line's midpoint inside the plot.
+        #                Classic tripartite look; no edge labels.
+        # Never both together — redundant clutter.
+        if label_mode not in ("edge", "midpoint"):
+            raise ValueError("label_mode must be 'edge' or 'midpoint'")
+        self._label_mode = label_mode
+        # show_diag_titles: the big centered 'Displacement (in)' / 'Acceleration (g)'
+        # axis titles drawn across the middle of the plot. None means
+        # style-dependent default (on for seismic, off otherwise).
+        self._show_diag_titles = show_diag_titles
         self._diag_which = "default"
         self._diag_line_style = dict(_DEFAULT_LINE_STYLE)
         self._major_line_style = dict(_MAJOR_LINE_STYLE)
@@ -119,6 +157,11 @@ class TripartiteAxes(Axes):
         self._disp_top_ticks: list[Line2D] = []
         self._accel_right_labels: list[Text] = []
         self._accel_right_ticks: list[Line2D] = []
+        # Fallback labels for segments that miss the designated edge. Placed
+        # ON the line, rotated to match the slope, offset ALONG the line into
+        # the plot — a user never sees an unlabeled in-view isoline.
+        self._disp_fallback_labels: list[Annotation] = []
+        self._accel_fallback_labels: list[Annotation] = []
 
         super().__init__(*args, **kwargs)
 
@@ -142,9 +185,11 @@ class TripartiteAxes(Axes):
             axis.set_major_locator(LogLocator(base=10, numticks=12))
             axis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10), numticks=60))
 
-        # Equal aspect in log space so one decade of x == one decade of y in
-        # display pixels -> +45 degree diagonals really look 45 degrees.
-        self.set_aspect("equal", adjustable="box")
+        # Aspect: 'equal' in log space gives true 45° diagonals; 'auto' lets
+        # the plot be squished. Label rotation is computed in display pixels
+        # (not data space), so labels follow the actual on-screen slope
+        # regardless of aspect.
+        self.set_aspect(self._tri_aspect, adjustable="box")
 
     # ------------------------------------------------------------------ API
 
@@ -161,6 +206,61 @@ class TripartiteAxes(Axes):
             self._units.disp_label, label, self._units.g_value, self._units.accel_in_g,
         )
         self._invalidate_cache()
+
+    def set_label_mode(self, mode: str) -> None:
+        """Switch labeling style at runtime. ``'edge'`` or ``'midpoint'``."""
+        if mode not in ("edge", "midpoint"):
+            raise ValueError("mode must be 'edge' or 'midpoint'")
+        self._label_mode = mode
+        self._invalidate_cache()
+
+    def set_show_diag_titles(self, show: bool | None) -> None:
+        """Enable / disable the big centered 'Displacement' / 'Acceleration'
+        callouts across the middle of the plot. ``None`` restores the
+        style-dependent default (on for seismic, off for other styles)."""
+        self._show_diag_titles = show
+        self._invalidate_cache()
+
+    def set_title(self, label, fontdict=None, loc=None, pad=None, *, y=None, **kwargs):
+        """Override: in edge label_mode, the top margin holds rotated disp
+        labels. Push the title up with extra ``pad`` so it doesn't collide,
+        and enable constrained_layout so the extra height is reserved in the
+        figure grid — otherwise the title would overflow into any subplot
+        above. Both effects are suppressed when the user passes ``pad=``
+        explicitly or already has a layout engine active.
+        """
+        if pad is None and self._label_mode == "edge":
+            # ~30 pt clears the outer offset (7 pt) + rotated label height.
+            pad = 30.0
+            # Enable constrained_layout on the root Figure if no engine is
+            # active, so the extra title height is reserved in the subplot
+            # grid (otherwise the title overflows into the axes above).
+            root = self.figure
+            while root is not None and not hasattr(root, "set_layout_engine"):
+                root = getattr(root, "figure", None)  # walk up from SubFigure
+            set_le = getattr(root, "set_layout_engine", None)
+            get_le = getattr(root, "get_layout_engine", None)
+            if set_le is not None and get_le is not None and get_le() is None:
+                try:
+                    set_le("constrained")
+                except Exception:  # noqa: BLE001
+                    pass  # non-fatal; user can set it themselves
+        return super().set_title(label, fontdict=fontdict, loc=loc, pad=pad, y=y, **kwargs)
+
+    def legend(self, *args, **kwargs):
+        """Override: in edge label_mode, the top-right margin carries disp
+        edge labels and the right margin carries accel edge labels, so the
+        matplotlib default ``loc='best'`` often picks a cluttered corner.
+        Default to ``'upper left'`` — the only uncluttered corner when edge
+        labels are drawn. Users passing ``loc=...`` explicitly are unaffected.
+        """
+        if "loc" not in kwargs and self._label_mode == "edge":
+            # Only set the default when the caller didn't also pass loc as
+            # a positional string (legend(handles, labels, loc, ...)).
+            has_pos_loc = any(isinstance(a, str) for a in args[:4])
+            if not has_pos_loc:
+                kwargs["loc"] = "upper left"
+        return super().legend(*args, **kwargs)
 
     def grid_diagonal(self, visible: bool = True, which: str = "major", **kwargs) -> None:
         """Toggle diagonal displacement / acceleration grid.
@@ -248,7 +348,10 @@ class TripartiteAxes(Axes):
 
     @property
     def diag_label_count(self) -> int:
-        return len(self._disp_labels) + len(self._accel_labels)
+        return (
+            len(self._disp_labels) + len(self._accel_labels)
+            + len(self._disp_fallback_labels) + len(self._accel_fallback_labels)
+        )
 
     @property
     def _diag_artists(self) -> list:
@@ -259,6 +362,8 @@ class TripartiteAxes(Axes):
                 out.append(coll)
         out.extend(self._disp_labels)
         out.extend(self._accel_labels)
+        out.extend(self._disp_fallback_labels)
+        out.extend(self._accel_fallback_labels)
         return out
 
     # ------------------------------------------------------------------ core
@@ -424,6 +529,8 @@ class TripartiteAxes(Axes):
         self._shrink_label_pool(self._accel_right_labels, 0)
         self._shrink_label_pool(self._disp_top_ticks, 0)
         self._shrink_label_pool(self._accel_right_ticks, 0)
+        self._shrink_label_pool(self._disp_fallback_labels, 0)
+        self._shrink_label_pool(self._accel_fallback_labels, 0)
         for attr in ("_disp_axis_title", "_accel_axis_title"):
             t = getattr(self, attr, None)
             if t is not None:
@@ -432,92 +539,110 @@ class TripartiteAxes(Axes):
                 setattr(self, attr, None)
 
     def _make_edge_tick(self, side: str) -> Line2D:
-        """Short tick line protruding inward from the top (or right) spine."""
+        """Short tick line protruding OUTWARD from the top (or right) spine.
+
+        Pairs with the rotated edge labels that sit outside the plot — the
+        tick marks where the isoline meets the spine; the label hangs in the
+        margin beyond. Length is 0.6% of the axes extent (a few pixels on
+        typical figure sizes).
+        """
         if side == "top":
             trans = blended_transform_factory(self.transData, self.transAxes)
-            line = Line2D([0.0, 0.0], [1.0, 0.985], transform=trans,
+            line = Line2D([0.0, 0.0], [1.0, 1.006], transform=trans,
                           color="0.15", linewidth=0.7)
         else:
             trans = blended_transform_factory(self.transAxes, self.transData)
-            line = Line2D([1.0, 0.985], [0.0, 0.0], transform=trans,
+            line = Line2D([1.0, 1.006], [0.0, 0.0], transform=trans,
                           color="0.15", linewidth=0.7)
         line.set_clip_on(False)
         self.add_artist(line)
         return line
 
-    def _make_edge_label(self, side: str) -> Text:
-        """Numeric label placed just inside the top (or right) spine."""
-        if side == "top":
-            trans = blended_transform_factory(self.transData, self.transAxes)
-            t = Text(0.0, 0.975, "", transform=trans,
-                     ha="center", va="top",
-                     fontsize=7, color="0.15", family="serif")
-        else:
-            trans = blended_transform_factory(self.transAxes, self.transData)
-            t = Text(0.975, 0.0, "", transform=trans,
-                     ha="right", va="center",
-                     fontsize=7, color="0.15", family="serif")
-        t.set_bbox(dict(_EDGE_LABEL_HALO_BBOX))
-        self.add_artist(t)
-        return t
+    def _make_edge_label(self, side: str) -> Annotation:
+        """Rotated numeric label placed ON the line at the edge crossing.
+
+        Uses ``textcoords='offset points'`` so the along-line inward offset
+        (set in ``_update_edge``) survives DPI / resize without recomputation.
+        """
+        ann = self.annotate(
+            "", xy=(0, 0), xycoords="data",
+            xytext=(0, 0), textcoords="offset points",
+            annotation_clip=False, **self._diag_label_style,
+        )
+        ann.set_rotation_mode("anchor")
+        ann.set_bbox(dict(_LABEL_HALO_BBOX))
+        return ann
 
     def _update_edge(
         self,
-        label_pool: list[Text],
+        label_pool: list[Annotation],
         tick_pool: list[Line2D],
         segments: list,
         side: str,
         unit_suffix: str = "",
     ) -> None:
-        """Place disp labels on top edge / accel labels on right edge.
+        """Place rotated ON-line labels at the designated edge crossing.
+
+        For each segment whose line crosses the designated edge (``side``),
+        anchor an Annotation at the crossing point in data coords, rotate it
+        to match the line's display-space slope, and offset it ALONG the
+        line by (half rendered width + 2 pt) so the text box stays inside
+        the frame while overlaying the line. A short tick mark is drawn
+        from the spine inward as a visual anchor.
+
+        Segments that miss the designated edge are handled by
+        :meth:`_update_edge_fallback`.
 
         Top (displacement): constant-d line v = 2π d f hits y = ymax at
         f = ymax / (2π d).
         Right (acceleration): constant-a line v = a / (2π f) hits x = xmax at
-        v = a / (2π xmax).  a = s.value * g_value when acceleration is shown in g.
+        v = a / (2π xmax).
         """
         TWO_PI = 2.0 * math.pi
         xmin, xmax = self.get_xlim()
         ymin, ymax = self.get_ylim()
         g = self._units.g_value if self._units.accel_in_g else 1.0
 
-        positions: list[tuple[float, float]] = []  # (pos_along_edge, raw value)
+        crossings: list[tuple[object, float, float]] = []  # (segment, fe, ve)
         for s in segments:
+            if s.value <= 0:
+                continue
             if side == "top":
                 f = ymax / (TWO_PI * s.value)
                 if xmin <= f <= xmax:
-                    positions.append((f, s.value))
+                    crossings.append((s, f, ymax))
             else:
                 a = s.value * g
                 v = a / (TWO_PI * xmax)
                 if ymin <= v <= ymax:
-                    positions.append((v, s.value))
+                    crossings.append((s, xmax, v))
 
-        if not positions:
+        if not crossings:
             self._shrink_label_pool(label_pool, 0)
             self._shrink_label_pool(tick_pool, 0)
             return
 
-        # Pixel-distance density filter along the edge.  Same philosophy as
-        # diagonal-label filter: keep all majors (m == 1), drop minors that
-        # crowd within MIN_PIX of the last kept label.
+        # Density filter along the edge in pixel space: keep all majors
+        # (mantissa == 1) and drop minors that crowd within MIN_PIX of the
+        # last kept entry. Same philosophy as _update_labels.
         trans = self.transData.transform
         if side == "top":
-            pix = trans(np.array([[p, ymax] for p, _ in positions]))[:, 0]
+            pix = trans(np.array([[c[1], ymax] for c in crossings]))[:, 0]
         else:
-            pix = trans(np.array([[xmax, p] for p, _ in positions]))[:, 1]
+            pix = trans(np.array([[xmax, c[2]] for c in crossings]))[:, 1]
 
         MIN_PIX = 35.0
-        keep: list[tuple[float, float]] = []
+        keep_idx: list[int] = []
         last = None
-        for i, (pos, val) in enumerate(positions):
-            m = int(round(val / 10 ** math.floor(math.log10(val))))
+        for i, (s, _, _) in enumerate(crossings):
+            m = int(round(s.value / 10 ** math.floor(math.log10(s.value))))
             is_major = (m == 1)
             if last is None or is_major or abs(pix[i] - last) >= MIN_PIX:
-                keep.append((pos, val))
+                keep_idx.append(i)
                 last = pix[i]
 
-        n = len(keep)
+        kept = [crossings[i] for i in keep_idx]
+        n = len(kept)
         while len(label_pool) < n:
             label_pool.append(self._make_edge_label(side))
         while len(tick_pool) < n:
@@ -525,18 +650,210 @@ class TripartiteAxes(Axes):
         self._shrink_label_pool(label_pool, n)
         self._shrink_label_pool(tick_pool, n)
 
+        # Placement: anchor at edge crossing, then two styles —
+        #   OUTSIDE (default): perpendicular offset past the tick mark, with
+        #     ha chosen so the rotated text body swings outward along the
+        #     line extension (not both ways from a centered anchor).
+        #   INSIDE (overflow): along-line offset inward by half the rendered
+        #     label width so the label sits CENTERED on the line, with its
+        #     bounding box entirely clear of the spine.
+        outer_offset_pt = 7.0  # past the ~4pt tick into the margin
+        inner_pad_pt = 2.0     # extra safety on top of half-width
+
+        def _log_frac(v, lo, hi):
+            if v <= 0 or lo <= 0 or hi <= 0:
+                return 0.5
+            return (math.log10(v) - math.log10(lo)) / max(
+                math.log10(hi) - math.log10(lo), 1e-30
+            )
+
+        renderer = None
+        try:
+            renderer = self.figure.canvas.get_renderer()
+        except Exception:
+            renderer = None
+
+        edge_normals = {"top": (0.0, 1.0), "right": (1.0, 0.0)}
+        ux, uy = edge_normals[side]
+
         suffix = f" {unit_suffix}" if unit_suffix else ""
-        for t, line, (pos, val) in zip(label_pool, tick_pool, keep):
-            text = _diag.format_value(val) + suffix
+        for ann, tick_line, (s, fe, ve) in zip(label_pool, tick_pool, kept):
+            p0 = trans((s.f0, s.v0))
+            p1 = trans((s.f1, s.v1))
+            angle = math.degrees(math.atan2(p1[1] - p0[1], p1[0] - p0[0]))
+            if angle > 90: angle -= 180
+            if angle < -90: angle += 180
+
+            overflow_inside = False
             if side == "top":
-                t.set_position((float(pos), 0.975))
-                line.set_xdata([float(pos), float(pos)])
+                if _log_frac(fe, xmin, xmax) > 0.97:
+                    overflow_inside = True
             else:
-                t.set_position((0.975, float(pos)))
-                line.set_ydata([float(pos), float(pos)])
-            t.set_text(text)
-            t.set_visible(True)
-            line.set_visible(True)
+                if _log_frac(ve, ymin, ymax) < 0.03:
+                    overflow_inside = True
+
+            ar = math.radians(angle)
+            lx, ly = math.cos(ar), math.sin(ar)
+
+            ann.set_text(_diag.format_value(s.value) + suffix)
+            ann.xy = (float(fe), float(ve))
+            ann.set_rotation_mode("anchor")
+            ann.set_rotation(float(angle))
+            ann.set_va("center_baseline")
+
+            if overflow_inside:
+                # ON the line — along-line inward offset by half rendered width.
+                # ha='center' keeps the label centered on the line; inward offset
+                # pushes the whole bbox off the spine so it doesn't clip.
+                if lx * (-ux) + ly * (-uy) >= 0:
+                    along_x, along_y = lx, ly
+                else:
+                    along_x, along_y = -lx, -ly
+                ann.set_ha("center")
+                # Measure AFTER setting text/rotation for an accurate width.
+                half_w_pt = 15.0
+                if renderer is not None:
+                    try:
+                        bbox = ann.get_window_extent(renderer=renderer)
+                        half_w_pt = (bbox.width * 72.0 / self.figure.dpi) / 2
+                    except Exception:
+                        pass
+                d_pt = half_w_pt + inner_pad_pt
+                ann.set_position((along_x * d_pt, along_y * d_pt))
+                ann.set_bbox(None)
+                # White stroke around glyphs so text stays readable over the
+                # diagonal grid without a bbox rectangle erasing it.
+                ann.set_path_effects(list(_INSIDE_LABEL_STROKE))
+            else:
+                # Outside past the tick — perpendicular offset, ha on the
+                # NEAR side so the rotated text body swings outward along
+                # the line (+x rotates to +outward, or -x rotates to +outward,
+                # whichever matches).
+                if lx * ux + ly * uy >= 0:
+                    ha = "left"   # +x rotates outward
+                else:
+                    ha = "right"  # -x rotates outward
+                ann.set_ha(ha)
+                ann.set_position((ux * outer_offset_pt, uy * outer_offset_pt))
+                ann.set_bbox(dict(_LABEL_HALO_BBOX))
+                ann.set_path_effects([])  # no stroke needed in the white margin
+
+            ann.set_visible(True)
+
+            if side == "top":
+                tick_line.set_xdata([float(fe), float(fe)])
+            else:
+                tick_line.set_ydata([float(ve), float(ve)])
+            tick_line.set_visible(True)
+
+    def _update_edge_fallback(
+        self,
+        label_pool: list[Annotation],
+        segments: list,
+        designated_edge: str,
+        unit_suffix: str = "",
+    ) -> None:
+        """Place labels INSIDE the plot for segments that miss the designated
+        edge (``'top'`` for disp, ``'right'`` for accel).
+
+        For a disp line (slope +1): if its crossing at v=ymax falls outside
+        [xmin, xmax], try the right edge instead. For an accel line (slope -1):
+        if its crossing at f=xmax falls outside [ymin, ymax], try the bottom.
+
+        Placement follows the 4cp-graph pattern: anchor at the fallback-edge
+        crossing, offset perpendicular inward by a few points, ha/va set so
+        rotation around the anchor sweeps the text body away from the spine.
+        No halo bbox — the label sits over the grid without erasing it.
+        """
+        TWO_PI = 2.0 * math.pi
+        xmin, xmax = self.get_xlim()
+        ymin, ymax = self.get_ylim()
+        g = self._units.g_value if self._units.accel_in_g else 1.0
+
+        # (segment, f_edge, v_edge, fallback_edge)
+        misses: list[tuple[object, float, float, str]] = []
+        for s in segments:
+            if s.value <= 0:
+                continue
+            if designated_edge == "top":
+                f_at_top = ymax / (TWO_PI * s.value)
+                if xmin <= f_at_top <= xmax:
+                    continue
+                v_at_right = TWO_PI * s.value * xmax
+                if ymin <= v_at_right <= ymax:
+                    misses.append((s, xmax, v_at_right, "right"))
+            else:  # "right" — accel
+                a = s.value * g
+                v_at_right = a / (TWO_PI * xmax)
+                if ymin <= v_at_right <= ymax:
+                    continue
+                f_at_bot = a / (TWO_PI * ymin)
+                if xmin <= f_at_bot <= xmax:
+                    misses.append((s, f_at_bot, ymin, "bottom"))
+
+        n = len(misses)
+        while len(label_pool) < n:
+            ann = self.annotate(
+                "", xy=(0, 0), xycoords="data",
+                xytext=(0, 0), textcoords="offset points",
+                annotation_clip=False, **self._diag_label_style,
+            )
+            ann.set_rotation_mode("anchor")
+            label_pool.append(ann)
+        self._shrink_label_pool(label_pool, n)
+        if n == 0:
+            return
+
+        suffix = f" {unit_suffix}" if unit_suffix else ""
+        trans = self.transData.transform
+        edge_normals = {
+            "right": (1.0, 0.0), "left": (-1.0, 0.0),
+            "top": (0.0, 1.0),   "bottom": (0.0, -1.0),
+        }
+        renderer = None
+        try:
+            renderer = self.figure.canvas.get_renderer()
+        except Exception:
+            renderer = None
+        inner_pad_pt = 2.0
+
+        for ann, (s, fe, ve, fb_edge) in zip(label_pool, misses):
+            p0 = trans((s.f0, s.v0))
+            p1 = trans((s.f1, s.v1))
+            angle = math.degrees(math.atan2(p1[1] - p0[1], p1[0] - p0[0]))
+            if angle > 90: angle -= 180
+            if angle < -90: angle += 180
+
+            # Along-line inward direction (opposite of fb_edge's outward normal).
+            ux, uy = edge_normals[fb_edge]
+            ar = math.radians(angle)
+            lx, ly = math.cos(ar), math.sin(ar)
+            if lx * (-ux) + ly * (-uy) >= 0:
+                along_x, along_y = lx, ly
+            else:
+                along_x, along_y = -lx, -ly
+
+            ann.set_text(_diag.format_value(s.value) + suffix)
+            ann.xy = (float(fe), float(ve))
+            ann.set_rotation_mode("anchor")
+            ann.set_rotation(float(angle))
+            ann.set_ha("center")
+            ann.set_va("center_baseline")
+            ann.set_bbox(None)
+            # White stroke around glyphs — readable over the grid without
+            # erasing a rectangular background region.
+            ann.set_path_effects(list(_INSIDE_LABEL_STROKE))
+
+            half_w_pt = 15.0
+            if renderer is not None:
+                try:
+                    bbox = ann.get_window_extent(renderer=renderer)
+                    half_w_pt = (bbox.width * 72.0 / self.figure.dpi) / 2
+                except Exception:
+                    pass
+            d_pt = half_w_pt + inner_pad_pt
+            ann.set_position((along_x * d_pt, along_y * d_pt))
+            ann.set_visible(True)
 
     def _view_is_valid(self, xlim, ylim) -> bool:
         if not (all(np.isfinite(xlim)) and all(np.isfinite(ylim))):
@@ -605,19 +922,50 @@ class TripartiteAxes(Axes):
         accel_label_segs = [s for s in accel_segs if _is_label_value(s.value, label_subs)]
         d_unit = _unit_from_label(self._units.disp_label) or ""
         a_unit = "g" if self._units.accel_in_g else _unit_from_label(self._units.accel_label)
-        self._update_labels(self._disp_labels, disp_label_segs, unit_suffix=d_unit)
-        self._update_labels(self._accel_labels, accel_label_segs, unit_suffix=a_unit)
-        self._update_edge(
-            self._disp_top_labels, self._disp_top_ticks,
-            disp_label_segs, "top", unit_suffix=d_unit,
-        )
-        self._update_edge(
-            self._accel_right_labels, self._accel_right_ticks,
-            accel_label_segs, "right", unit_suffix=a_unit,
-        )
 
-        # Diagonal axis titles (seismic style only — dplot identifies family via label unit).
-        if self._style == "seismic":
+        want_midpoint = self._label_mode == "midpoint"
+        want_border = self._label_mode == "edge"
+
+        if want_midpoint:
+            self._update_labels(self._disp_labels, disp_label_segs, unit_suffix=d_unit)
+            self._update_labels(self._accel_labels, accel_label_segs, unit_suffix=a_unit)
+        else:
+            self._shrink_label_pool(self._disp_labels, 0)
+            self._shrink_label_pool(self._accel_labels, 0)
+
+        if want_border:
+            self._update_edge(
+                self._disp_top_labels, self._disp_top_ticks,
+                disp_label_segs, "top", unit_suffix=d_unit,
+            )
+            self._update_edge(
+                self._accel_right_labels, self._accel_right_ticks,
+                accel_label_segs, "right", unit_suffix=a_unit,
+            )
+            # Fallback: every label-eligible segment that missed its designated
+            # edge gets a rotated label on the line inside the plot.
+            self._update_edge_fallback(
+                self._disp_fallback_labels, disp_label_segs, "top", unit_suffix=d_unit,
+            )
+            self._update_edge_fallback(
+                self._accel_fallback_labels, accel_label_segs, "right", unit_suffix=a_unit,
+            )
+        else:
+            self._shrink_label_pool(self._disp_top_labels, 0)
+            self._shrink_label_pool(self._accel_right_labels, 0)
+            self._shrink_label_pool(self._disp_top_ticks, 0)
+            self._shrink_label_pool(self._accel_right_ticks, 0)
+            self._shrink_label_pool(self._disp_fallback_labels, 0)
+            self._shrink_label_pool(self._accel_fallback_labels, 0)
+
+        # Diagonal axis titles — explicit override wins, else style default
+        # (on for seismic, off for others — matches historical behavior).
+        titles_on = (
+            self._show_diag_titles
+            if self._show_diag_titles is not None
+            else (self._style == "seismic")
+        )
+        if titles_on:
             self._update_axis_title(
                 "_disp_axis_title",
                 f"Displacement ({d_unit})" if d_unit else "Displacement",
@@ -660,6 +1008,8 @@ class TripartiteAxes(Axes):
             self._units.g_value,
             self._units.disp_label,
             self._units.accel_label,
+            self._label_mode,
+            self._show_diag_titles,
             bbox,
         )
 
@@ -696,6 +1046,8 @@ class TripartiteAxes(Axes):
         self._disp_top_ticks = []
         self._accel_right_labels = []
         self._accel_right_ticks = []
+        self._disp_fallback_labels = []
+        self._accel_fallback_labels = []
         return result
 
     def __getstate__(self):
@@ -710,6 +1062,8 @@ class TripartiteAxes(Axes):
         state["_disp_top_ticks"] = []
         state["_accel_right_labels"] = []
         state["_accel_right_ticks"] = []
+        state["_disp_fallback_labels"] = []
+        state["_accel_fallback_labels"] = []
         state["_cache_key"] = None
         return state
 

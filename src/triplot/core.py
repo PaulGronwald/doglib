@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import diagonals as _diag
+from . import ticks as _ticks
 from .backends.base import (
     Backend,
     BackendStyle,
@@ -253,68 +254,62 @@ class TripartiteCore:
             return
 
         g = self._g_value()
-        # Adapt gridline density to the visible decade span of each family's
-        # constant-value range. Disp lines span d = v/(2π f); accel lines
-        # span a = 2π f v. Each family can have a different span, so pick
-        # subdivisions + decade_step independently for balanced density.
+
+        # Split each family into majors + minors using the same policy as
+        # the X/Y axis gridlines (see ticks.major_minor_split). Majors are
+        # the anchors — always ``10^k`` values, bounded to ~5-8 visible
+        # across any viewport via nice decade steps. Minors fill the
+        # space between majors logically in log space.
         #
-        # Two-knob model:
-        #   - decade_step picks WHICH decades get ticks (every 1st, 2nd,
-        #     5th, ...) — engages for ultra-wide spans.
-        #   - subdivisions picks WHICH mantissas within each sampled
-        #     decade. Its input is the *sampled* decade count
-        #     (span/step), not the raw span, so the ladder maps to the
-        #     number of decades that will actually be visited.
+        # Only majors carry edge labels / midpoint labels / ticks —
+        # minors are decoration only, matching the X/Y axis convention.
         d_lo, d_hi = _diag.displacement_value_range(xlim, ylim)
         a_lo, a_hi = _diag.acceleration_value_range(xlim, ylim)
-        disp_span = _decade_span(d_lo, d_hi)
-        accel_span = _decade_span(a_lo / g, a_hi / g)
-        disp_step = self.decade_step(disp_span)
-        accel_step = self.decade_step(accel_span)
-        disp_subs = self.subdivisions(span_decades=disp_span / disp_step)
-        accel_subs = self.subdivisions(span_decades=accel_span / accel_step)
-        label_subs = self.label_subdivisions()
 
-        # Pick gridlines on the actual viewport range (not overflow-padded) so
-        # the ≥ min_count guarantee is met with values whose clipped segment
-        # is certain to intersect the viewport. Overflow / edge-label handling
-        # uses the segment-miss routing in _emit_edge for lines that exit via
-        # the "wrong" spine — no padding needed here.
-        disp_segs = []
-        for v in _diag.pick_displacement_values(
-            xlim, ylim, subdivisions=disp_subs, min_count=2,
-            include_overflow=False, decade_step=disp_step,
-        ):
-            seg = _diag.displacement_segment(v, xlim, ylim)
-            if seg is not None:
-                disp_segs.append(seg)
+        disp_maj_vals, disp_min_vals = _ticks.major_minor_split(d_lo, d_hi)
+        accel_maj_vals, accel_min_vals = _ticks.major_minor_split(
+            a_lo / g, a_hi / g,
+        )
 
-        accel_segs = []
-        for v in _diag.pick_acceleration_values(
-            xlim, ylim, g_value=g, subdivisions=accel_subs, min_count=2,
-            include_overflow=False, decade_step=accel_step,
-        ):
-            seg = _diag.acceleration_segment(v, xlim, ylim, g_value=g)
-            if seg is not None:
-                accel_segs.append(seg)
+        # Guarantee at least 2 majors even in ultra-narrow zooms — fall
+        # back to the progressive mantissa picker when the decade-only
+        # split is insufficient (e.g. sub-decade viewports).
+        if len(disp_maj_vals) < 2:
+            disp_maj_vals = _diag.pick_displacement_values(
+                xlim, ylim, min_count=2, include_overflow=False,
+            )
+            disp_min_vals = []
+        if len(accel_maj_vals) < 2:
+            accel_maj_vals = _diag.pick_acceleration_values(
+                xlim, ylim, g_value=g, min_count=2, include_overflow=False,
+            )
+            accel_min_vals = []
 
+        disp_maj_segs = _clip_values(disp_maj_vals, xlim, ylim, "disp", g)
+        disp_min_segs = _clip_values(disp_min_vals, xlim, ylim, "disp", g)
+        accel_maj_segs = _clip_values(accel_maj_vals, xlim, ylim, "accel", g)
+        accel_min_segs = _clip_values(accel_min_vals, xlim, ylim, "accel", g)
+
+        # Union for legacy introspection (``last_*_segments``, tests).
+        disp_segs = disp_maj_segs + disp_min_segs
+        accel_segs = accel_maj_segs + accel_min_segs
         self.last_disp_segments = disp_segs
         self.last_accel_segments = accel_segs
 
-        self._emit_lines(backend, DiagramFamily.DISPLACEMENT, disp_segs)
-        self._emit_lines(backend, DiagramFamily.ACCELERATION, accel_segs)
+        # Render: majors + minors as one per-family collection, styled
+        # per segment so the backend can draw them in one pass.
+        self._emit_lines_tiered(
+            backend, DiagramFamily.DISPLACEMENT, disp_maj_segs, disp_min_segs,
+        )
+        self._emit_lines_tiered(
+            backend, DiagramFamily.ACCELERATION, accel_maj_segs, accel_min_segs,
+        )
 
-        # Label selection: filter picked lines by the style's label_subs
-        # ({1,2,4,6,8} for seismic, {1,5} for dplot, etc). If the zoom is
-        # narrow enough that none of the gridlines happen to fall on a
-        # style-default label, relax and label every picked gridline — the
-        # alternative is a pile of unlabeled lines the user can't identify.
-        disp_label_segs = [s for s in disp_segs if _is_label_value(s.value, label_subs)]
-        if not disp_label_segs and disp_segs:
-            disp_label_segs = list(disp_segs)
-        accel_label_segs = [s for s in accel_segs if _is_label_value(s.value, label_subs)]
-        if not accel_label_segs and accel_segs:
-            accel_label_segs = list(accel_segs)
+        # Only majors get labels — the matching convention with the X/Y
+        # axis gridlines, and what the user expects: minors are logical
+        # in-between decorations with no numeric identity.
+        disp_label_segs = disp_maj_segs
+        accel_label_segs = accel_maj_segs
 
         want_mid = self.label_mode == "midpoint"
         want_edge = self.label_mode == "edge"
@@ -361,14 +356,29 @@ class TripartiteCore:
             backend.set_ticks(fam, [])
         backend.request_redraw()
 
-    def _emit_lines(self, backend: Backend, family: DiagramFamily, segs: list) -> None:
+    def _emit_lines_tiered(
+        self,
+        backend: Backend,
+        family: DiagramFamily,
+        majors: list,
+        minors: list,
+    ) -> None:
+        """Render majors + minors as one tiered collection.
+
+        Majors styled with :attr:`major_style`, minors with
+        :attr:`minor_style`. Minors come first in the emitted list so
+        majors render on top — matters only at exact crossings, which
+        with our picker is every minor's two neighbours.
+
+        When the user has overridden the grid style (``tiered_default``
+        is False), everything is drawn at :attr:`line_style`.
+        """
+        segs = minors + majors
         endpoints = [((s.f0, s.v0), (s.f1, s.v1)) for s in segs]
         if self.tiered_default:
-            per_line = []
-            for s in segs:
-                m = _mantissa_int(s.value)
-                style = self.major_style if m == 1 else self.minor_style
-                per_line.append(dict(style))
+            per_line = [dict(self.minor_style) for _ in minors] + [
+                dict(self.major_style) for _ in majors
+            ]
             backend.set_lines(family, endpoints, per_line)
         else:
             backend.set_lines(family, endpoints, None)
@@ -698,6 +708,33 @@ def _log_frac(v: float, lo: float, hi: float) -> float:
     return (math.log10(v) - math.log10(lo)) / max(
         math.log10(hi) - math.log10(lo), 1e-30
     )
+
+
+def _clip_values(
+    values: list[float],
+    xlim,
+    ylim,
+    family: str,
+    g: float,
+) -> list:
+    """Turn a list of constant-value picks into clipped segments.
+
+    ``family`` is ``'disp'`` or ``'accel'``. ``g`` is the acceleration
+    scale factor (1.0 for SI; 386.089 for imperial-in-g). Drops values
+    whose clipped segment doesn't intersect the viewport.
+    """
+    out = []
+    if family == "disp":
+        for v in values:
+            seg = _diag.displacement_segment(v, xlim, ylim)
+            if seg is not None:
+                out.append(seg)
+    else:
+        for v in values:
+            seg = _diag.acceleration_segment(v, xlim, ylim, g_value=g)
+            if seg is not None:
+                out.append(seg)
+    return out
 
 
 def _decade_span(lo: float, hi: float) -> float:

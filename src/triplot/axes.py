@@ -19,7 +19,9 @@ import warnings
 
 import numpy as np
 from matplotlib.axes import Axes
-from matplotlib.ticker import FuncFormatter, LogLocator
+from matplotlib.ticker import Formatter, Locator
+
+from . import ticks as _ticks
 
 from . import core as _core
 from .backends.base import DiagramFamily
@@ -35,6 +37,56 @@ def _unit_from_label(label: str) -> str:
     """Extract bracketed unit from a label — re-exported for tests."""
     from .core import _unit_from_label as _f
     return _f(label)
+
+
+class AdaptiveLogLocator(Locator):
+    """Custom log-axis tick locator using :func:`ticks.major_minor_split`.
+
+    Replaces matplotlib's default ``LogLocator`` pair (one for major, one
+    for minor). ``LogLocator`` often emits ~60 minors on wide zooms
+    ("insane amount of minor gridlines") and drops to a single minor
+    between distant majors ("only one minor when spacing goes 1E2 to
+    1E5"). Our split always keeps ~5-6 majors + 2-8 minors regardless
+    of span.
+
+    Instances come in pairs — one for the major-tick slot, one for the
+    minor-tick slot — and share the same ``split`` function so their
+    outputs are guaranteed disjoint.
+    """
+
+    def __init__(self, *, kind: str):
+        if kind not in ("major", "minor"):
+            raise ValueError("kind must be 'major' or 'minor'")
+        self._kind = kind
+
+    def __call__(self):
+        vmin, vmax = self.axis.get_view_interval()
+        if vmin <= 0 or vmax <= 0 or vmax <= vmin:
+            return []
+        majors, minors = _ticks.major_minor_split(float(vmin), float(vmax))
+        return majors if self._kind == "major" else minors
+
+    def tick_values(self, vmin, vmax):
+        if vmin <= 0 or vmax <= 0 or vmax <= vmin:
+            return []
+        majors, minors = _ticks.major_minor_split(float(vmin), float(vmax))
+        return majors if self._kind == "major" else minors
+
+
+class _MajorOnlyFormatter(Formatter):
+    """Format majors as ``%g``; minors are gridline-only (no text).
+
+    matplotlib draws minor tick text by default when a minor locator
+    emits values — even if those values look weird (``'3e2'`` between
+    ``'100'`` and ``'1000'``). Returning ``''`` from the minor formatter
+    keeps the minor grid without the clutter.
+    """
+
+    def __init__(self, *, major: bool = True):
+        self._major = major
+
+    def __call__(self, x, pos=None):
+        return f"{x:g}" if self._major else ""
 
 
 class TripartiteAxes(Axes):
@@ -87,12 +139,17 @@ class TripartiteAxes(Axes):
 
         self.set_xlabel(self._core.units.freq_label)
         self.set_ylabel(self._core.units.vel_label)
-        self.grid(True, which="both", linestyle="-", linewidth=0.4, color="0.8")
+        # Two-tier grid styling: majors stronger, minors faint. Both
+        # toggle together via grid(which='both') — disabling one tier is
+        # via the matching axis.{xaxis,yaxis}.grid(False, which=...) hook.
+        self.grid(True, which="major", linestyle="-", linewidth=0.5, color="0.7")
+        self.grid(True, which="minor", linestyle="-", linewidth=0.3, color="0.85")
 
         for axis in (self.xaxis, self.yaxis):
-            axis.set_major_formatter(FuncFormatter(_plain_tick_formatter))
-            axis.set_major_locator(LogLocator(base=10, numticks=12))
-            axis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10), numticks=60))
+            axis.set_major_locator(AdaptiveLogLocator(kind="major"))
+            axis.set_minor_locator(AdaptiveLogLocator(kind="minor"))
+            axis.set_major_formatter(_MajorOnlyFormatter(major=True))
+            axis.set_minor_formatter(_MajorOnlyFormatter(major=False))
 
         # adjustable='datalim' keeps the axes BOX fixed and expands limits to
         # satisfy the aspect constraint. With 'box' (the mpl default) zoom

@@ -33,6 +33,43 @@ def _plain_tick_formatter(x, pos):
     return f"{x:g}"
 
 
+# Safe log-range bounds. Python floats max out at ~1.8e308, so anything
+# past 10^290 risks :class:`OverflowError` in downstream 10**x math.
+# 290 leaves comfortable margin — at that width the grid picker has
+# already degraded due to float precision (ULP ~ 1 decade near 10^300).
+_LOG_MAX = 290.0
+
+
+def _clamp_log(v: float) -> float:
+    """Clamp ``log10(v)`` into the safe float range."""
+    if v > _LOG_MAX:
+        return _LOG_MAX
+    if v < -_LOG_MAX:
+        return -_LOG_MAX
+    return v
+
+
+def _zoom_log_range(a: float, b: float, anchor: float, factor: float):
+    """Compute new (lo, hi) after zooming by ``factor`` about ``anchor``
+    in log space. Returns ``None`` when the result would cross the safe
+    float boundary — the caller should treat that as "no-op this
+    scroll tick" rather than silently clamping, because clamping would
+    make further scroll-outs feel unresponsive.
+    """
+    import math
+    if a <= 0 or b <= 0 or anchor <= 0:
+        return None
+    la, lb = math.log10(a), math.log10(b)
+    lx = math.log10(anchor)
+    new_la = lx + (la - lx) * factor
+    new_lb = lx + (lb - lx) * factor
+    # Reject if EITHER endpoint would leave the safe range — silently
+    # clamping only one side would narrow the viewport asymmetrically.
+    if abs(new_la) > _LOG_MAX or abs(new_lb) > _LOG_MAX:
+        return None
+    return 10.0 ** new_la, 10.0 ** new_lb
+
+
 def _unit_from_label(label: str) -> str:
     """Extract bracketed unit from a label — re-exported for tests."""
     from .core import _unit_from_label as _f
@@ -259,23 +296,24 @@ class TripartiteAxes(Axes):
         Zoom factor per tick tuned to feel similar to plotly / Google Maps —
         small enough not to overshoot, large enough to reach any scale in
         a handful of ticks.
+
+        Limits are clamped to ``[10^-290, 10^+290]`` so runaway zoom-out
+        doesn't trip :class:`OverflowError` in ``10**x`` near the float
+        max (~1.8e308). Users can still sweep 580 decades — plenty — and
+        the grid picker stops producing sensible output past ~200
+        decades anyway (float precision collapses).
         """
         if event.inaxes is not self or event.xdata is None or event.ydata is None:
             return
-        import math
         factor = 0.8 if event.button == "up" else 1.25
         x0, x1 = self.get_xlim()
         y0, y1 = self.get_ylim()
-        lx = math.log10(event.xdata)
-        ly = math.log10(event.ydata)
-        lx0, lx1 = math.log10(x0), math.log10(x1)
-        ly0, ly1 = math.log10(y0), math.log10(y1)
-        new_lx0 = lx + (lx0 - lx) * factor
-        new_lx1 = lx + (lx1 - lx) * factor
-        new_ly0 = ly + (ly0 - ly) * factor
-        new_ly1 = ly + (ly1 - ly) * factor
-        self.set_xlim(10 ** new_lx0, 10 ** new_lx1)
-        self.set_ylim(10 ** new_ly0, 10 ** new_ly1)
+        new_xlim = _zoom_log_range(x0, x1, event.xdata, factor)
+        new_ylim = _zoom_log_range(y0, y1, event.ydata, factor)
+        if new_xlim is None or new_ylim is None:
+            return  # zoom-out would exceed safe float range; no-op
+        self.set_xlim(*new_xlim)
+        self.set_ylim(*new_ylim)
         self.figure.canvas.draw_idle()
 
     def _invalidate_cache(self) -> None:

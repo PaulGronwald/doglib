@@ -58,6 +58,12 @@ def plot(freq=None, pv=None, *, figsize=None, **axes_kwargs):
         fig, ax = triplot.plot(freq, pv)
         plt.show()
 
+    When ``freq`` and ``pv`` are supplied, the initial viewport is
+    auto-fit to the data with a small log-space margin — the user sees
+    the curve filling the plot on first render instead of the default
+    ``[1, 1000] × [0.1, 100]`` window. Subsequent pan/zoom proceed
+    from this viewport; the autoscale only runs once at creation.
+
     Passing ``freq=None`` / ``pv=None`` is equivalent to :func:`subplots`
     — useful when you want to add multiple curves later.
 
@@ -66,7 +72,30 @@ def plot(freq=None, pv=None, *, figsize=None, **axes_kwargs):
     fig, ax = subplots(figsize=figsize, **axes_kwargs)
     if freq is not None and pv is not None:
         ax.plot(freq, pv)
+        _fit_viewport_to_data(ax, freq, pv)
     return fig, ax
+
+
+def _fit_viewport_to_data(ax, freq, pv) -> None:
+    """Set initial xlim / ylim to cover ``(freq, pv)`` with a small
+    log-space margin. Runs once at plot creation; pan/zoom afterwards
+    can take the viewport anywhere without being reset."""
+    import math
+    try:
+        fmin = min(float(v) for v in freq if v > 0)
+        fmax = max(float(v) for v in freq if v > 0)
+        vmin = min(float(v) for v in pv if v > 0)
+        vmax = max(float(v) for v in pv if v > 0)
+    except (ValueError, TypeError):
+        return  # empty / non-positive — leave default viewport in place
+    if not (fmin < fmax and vmin < vmax):
+        return
+    # Margin of ~10% of the data span in log space so endpoints aren't
+    # glued to the spines.
+    mx = max(0.05 * (math.log10(fmax) - math.log10(fmin)), 0.05)
+    my = max(0.05 * (math.log10(vmax) - math.log10(vmin)), 0.05)
+    ax.set_xlim(10 ** (math.log10(fmin) - mx), 10 ** (math.log10(fmax) + mx))
+    ax.set_ylim(10 ** (math.log10(vmin) - my), 10 ** (math.log10(vmax) + my))
 
 
 __all__ = [

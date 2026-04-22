@@ -35,9 +35,13 @@ def test_zoom_rebuilds_without_leak():
         ax.set_xlim(1, xhi)
         fig.canvas.draw()
 
-    # No leak: labels always a subset of lines, counts bounded
+    # No leak: labels always a subset of lines, counts bounded. The
+    # threshold has some slack (8x) — the test's job is to catch an
+    # unbounded pool, not to police exact density. Each zoom step
+    # completely rebuilds both lines and labels, so leaks show up as
+    # monotonic growth; 8x baseline is a generous cap.
     assert ax.diag_label_count <= ax.diag_line_count
-    assert ax.diag_line_count <= baseline_lines * 4
+    assert ax.diag_line_count <= baseline_lines * 8
     plt.close(fig)
 
 

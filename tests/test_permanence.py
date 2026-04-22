@@ -125,9 +125,12 @@ def test_extreme_narrow_range():
     ax.set_xlim(100, 110)
     ax.set_ylim(10, 11)
     fig.canvas.draw()
-    # at least something should still render — or zero is acceptable if no "nice"
-    # decade falls inside the band. Either way draw must not crash.
-    assert ax.diag_line_count == ax.diag_label_count
+    # Narrow sub-decade viewport must still render some lines (majors +
+    # minors) without crashing. Labels are majors-only so count stays
+    # below line count — that's the intended major/minor split now.
+    assert ax.diag_line_count >= 2
+    assert ax.diag_label_count <= ax.diag_line_count
+    assert ax.diag_label_count >= 1
     plt.close(fig)
 
 

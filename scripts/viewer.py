@@ -65,8 +65,15 @@ def main():
         lx, ly = math.log10(x), math.log10(y)
         lx0, lx1 = math.log10(x0), math.log10(x1)
         ly0, ly1 = math.log10(y0), math.log10(y1)
-        ax.set_xlim(10 ** (lx - (lx - lx0) * scale), 10 ** (lx + (lx1 - lx) * scale))
-        ax.set_ylim(10 ** (ly - (ly - ly0) * scale), 10 ** (ly + (ly1 - ly) * scale))
+        new_lx0 = lx - (lx - lx0) * scale
+        new_lx1 = lx + (lx1 - lx) * scale
+        new_ly0 = ly - (ly - ly0) * scale
+        new_ly1 = ly + (ly1 - ly) * scale
+        # Clamp to ±290 so 10**x doesn't OverflowError near float max.
+        if max(abs(new_lx0), abs(new_lx1), abs(new_ly0), abs(new_ly1)) > 290.0:
+            return
+        ax.set_xlim(10 ** new_lx0, 10 ** new_lx1)
+        ax.set_ylim(10 ** new_ly0, 10 ** new_ly1)
         fig.canvas.draw_idle()
 
     fig.canvas.mpl_connect("scroll_event", on_scroll)

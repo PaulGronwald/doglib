@@ -202,14 +202,55 @@ def major_minor_split(
 
     span = math.log10(hi) - math.log10(lo)
 
-    # Sub-decade viewports: decade-only majors (``10^k``) would yield 0-1
-    # anchors and the plot would look almost gridless. Fall through to
-    # the mantissa-level progressive picker for both majors and minors,
-    # same policy as the existing diagonal tick picker.
-    if span < 1.3:
-        majors = nice_values(lo, hi, preferred=(1.0, 2.0, 5.0), min_count=target_major)
-        # Minors = the finer ladder minus majors (kept disjoint).
-        finer = nice_values(lo, hi, preferred=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0))
+    # Sub-decade viewports: decade-only majors (``10^k``) yield 0-1
+    # anchors and the plot looks almost gridless. Pick a coarser ladder
+    # for majors and ALWAYS put minors on a strictly finer ladder, so
+    # the classic log-grid look survives even when the viewport sits
+    # inside a single decade. The two ladders below are chosen so
+    # minor - major is never empty in any realistic viewport.
+    if span < 1.0:
+        # Try ladders in order of coarseness. Stop at the first that
+        # emits >= 2 majors — want MAJORS SPARSE (2-6), MINORS FINER.
+        _MAJ_LADDERS = (
+            (1.0, 2.0, 5.0),
+            (1.0, 2.0, 3.0, 5.0, 7.0),
+            (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0),
+            (1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0),
+            (1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0,
+             6.0, 7.0, 8.0, 9.0),
+        )
+        maj_ladder: tuple[float, ...] | None = None
+        majors: list[float] = []
+        for i, ladder in enumerate(_MAJ_LADDERS):
+            vs = _enum_ladder(lo, hi, ladder)
+            if len(vs) >= 2:
+                maj_ladder = ladder
+                majors = vs
+                # Remember the NEXT-finer ladder for minors
+                if i + 1 < len(_MAJ_LADDERS):
+                    min_ladder = _MAJ_LADDERS[i + 1]
+                else:
+                    min_ladder = _MAJ_LADDERS[-1]
+                break
+        else:
+            # Ultra-narrow: no ladder produces >= 2. Fall back to linear
+            # nice stepping for both, putting minors at half-major-step.
+            majors = _linear_fallback(lo, hi, min_count=2)
+            if len(majors) >= 2:
+                half = []
+                for j in range(len(majors) - 1):
+                    mid = 10.0 ** (
+                        (math.log10(majors[j]) + math.log10(majors[j + 1])) / 2
+                    )
+                    if lo <= mid <= hi:
+                        half.append(mid)
+                return majors, half
+            return majors, []
+
+        # Enumerate the finer ladder and subtract majors by log-index
+        # match (exact float equality is unreliable; round to 9 decimal
+        # places in log space to collapse 1e-16 drift).
+        finer = _enum_ladder(lo, hi, min_ladder)
         maj_set = {round(math.log10(m), 9) for m in majors}
         minors = [
             v for v in finer
@@ -233,18 +274,16 @@ def major_minor_split(
             majors.append(v)
 
     # Minors — two strategies depending on step:
-    #   step == 1: populate mantissa subs within each decade
-    #   step >= 2: subdivide by finer decade_step
+    #   step == 1: populate full mantissa ladder {2..9} within each
+    #              decade. This is the classic log-grid look: a decade
+    #              from ``10^k`` to ``10^(k+1)`` carries 8 minors whose
+    #              visual spacing tightens as you approach the next
+    #              major. Anything sparser looks wrong.
+    #   step >= 2: subdivide the major interval in log space by emitting
+    #              every minor_step^th decade between consecutive majors.
     minors: list[float] = []
     if step == 1:
-        # Sub-decade minors — spread target_minor_per_major across {2..9}.
-        # Pick a nice subset: {2,5} (2), {2,3,5,7} (4), {2,3,4,5,6,7,8,9} (8).
-        if target_minor_per_major <= 2:
-            mantissas: tuple[float, ...] = (2.0, 5.0)
-        elif target_minor_per_major <= 4:
-            mantissas = (2.0, 3.0, 5.0, 7.0)
-        else:
-            mantissas = (2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
+        mantissas = (2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
         for k in range(kmin - 1, kmax + 2):
             base = 10.0 ** k
             for m in mantissas:

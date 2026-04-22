@@ -128,17 +128,52 @@ class TripartiteCore:
 
     # ---- style subsets --------------------------------------------------
 
-    def subdivisions(self) -> tuple[float, ...]:
-        """Which mantissas get gridlines within each decade."""
-        if self.diag_which == "default":
-            if self.style in ("seismic", "dplot"):
-                return (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
-            return (1.0,)  # shock: sparse
-        if self.diag_which == "major":
+    def subdivisions(self, span_decades: float | None = None) -> tuple[float, ...]:
+        """Which mantissas get gridlines within each decade.
+
+        When ``span_decades`` is given, the returned set is thinned for
+        wide viewports so zooming out doesn't flood the plot with
+        gridlines. Without this, a viewport spanning 12 decades would
+        emit 12x9 = 108 lines per family; the previous behaviour kept
+        that density no matter how wide the zoom, cluttering the screen.
+
+        Thresholds (per decade span) are tuned so visual density on a
+        ~700-1000px axes stays roughly constant:
+
+        | span          | gridlines per decade               |
+        | ------------- | ---------------------------------- |
+        | <= 2 decades  | full ``{1..9}`` (seismic/dplot)    |
+        | <= 4 decades  | ``{1, 2, 3, 5, 7}``                |
+        | <= 7 decades  | ``{1, 2, 5}``                      |
+        | <= 12 decades | ``{1, 3}``                         |
+        | > 12 decades  | ``{1}`` — one major per decade     |
+
+        User overrides via ``grid_diagonal(which=...)`` are always
+        respected verbatim — we only adapt the default tier.
+        """
+        if self.diag_which != "default":
+            if self.diag_which == "major":
+                return (1.0,)
+            if self.diag_which == "minor":
+                return (1.0, 2.0, 5.0)
+            return (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
+
+        if self.style == "shock":
+            # shock style is always sparse regardless of zoom
             return (1.0,)
-        if self.diag_which == "minor":
+
+        if span_decades is None:
+            return (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
+
+        if span_decades <= 2.0:
+            return (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
+        if span_decades <= 4.0:
+            return (1.0, 2.0, 3.0, 5.0, 7.0)
+        if span_decades <= 7.0:
             return (1.0, 2.0, 5.0)
-        return (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
+        if span_decades <= 12.0:
+            return (1.0, 3.0)
+        return (1.0,)
 
     def label_subdivisions(self) -> tuple[float, ...]:
         """Which mantissas get numeric labels."""
@@ -181,9 +216,19 @@ class TripartiteCore:
             self._emit_empty(backend)
             return
 
-        subs = self.subdivisions()
-        label_subs = self.label_subdivisions()
         g = self._g_value()
+        # Adapt gridline density to the visible decade span of each family's
+        # constant-value range. Disp lines span d = v/(2π f); accel lines
+        # span a = 2π f v. Each family can have a different span (the
+        # accel axis covers x*y decades while disp covers x+y^-1), so
+        # subdivisions are chosen per-family for balanced visual density.
+        d_lo, d_hi = _diag.displacement_value_range(xlim, ylim)
+        a_lo, a_hi = _diag.acceleration_value_range(xlim, ylim)
+        disp_span = _decade_span(d_lo, d_hi)
+        accel_span = _decade_span(a_lo / g, a_hi / g)
+        disp_subs = self.subdivisions(span_decades=disp_span)
+        accel_subs = self.subdivisions(span_decades=accel_span)
+        label_subs = self.label_subdivisions()
 
         # Pick gridlines on the actual viewport range (not overflow-padded) so
         # the ≥ min_count guarantee is met with values whose clipped segment
@@ -192,7 +237,7 @@ class TripartiteCore:
         # the "wrong" spine — no padding needed here.
         disp_segs = []
         for v in _diag.pick_displacement_values(
-            xlim, ylim, subdivisions=subs, min_count=2, include_overflow=False,
+            xlim, ylim, subdivisions=disp_subs, min_count=2, include_overflow=False,
         ):
             seg = _diag.displacement_segment(v, xlim, ylim)
             if seg is not None:
@@ -200,7 +245,7 @@ class TripartiteCore:
 
         accel_segs = []
         for v in _diag.pick_acceleration_values(
-            xlim, ylim, g_value=g, subdivisions=subs,
+            xlim, ylim, g_value=g, subdivisions=accel_subs,
             min_count=2, include_overflow=False,
         ):
             seg = _diag.acceleration_segment(v, xlim, ylim, g_value=g)
@@ -607,3 +652,12 @@ def _log_frac(v: float, lo: float, hi: float) -> float:
     return (math.log10(v) - math.log10(lo)) / max(
         math.log10(hi) - math.log10(lo), 1e-30
     )
+
+
+def _decade_span(lo: float, hi: float) -> float:
+    """Viewport span in decades. Returns 0 for degenerate ranges so the
+    caller can treat sub-positive inputs as "not enough info" and fall
+    back to the densest ladder."""
+    if lo <= 0 or hi <= 0 or hi <= lo:
+        return 0.0
+    return math.log10(hi) - math.log10(lo)

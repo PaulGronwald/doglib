@@ -47,20 +47,36 @@ _LADDERS: tuple[tuple[float, ...], ...] = (
 )
 
 
-def _enum_ladder(lo: float, hi: float, ladder: tuple[float, ...]) -> list[float]:
-    """All ``m * 10^k`` values in [lo, hi] for ``m`` in the ladder."""
-    if lo <= 0 or hi <= 0 or hi < lo:
+def _enum_ladder(
+    lo: float,
+    hi: float,
+    ladder: tuple[float, ...],
+    decade_step: int = 1,
+) -> list[float]:
+    """All ``m * 10^k`` values in [lo, hi] for ``m`` in the ladder, ``k``
+    stepped by ``decade_step``.
+
+    ``decade_step > 1`` emits ticks every Nth decade only. Anchored at
+    k=0 so the step is stable under pan — e.g. ``decade_step=5`` always
+    emits 10^0, 10^5, 10^10, ... rather than whichever decade happens
+    to fall at the start of the viewport.
+    """
+    if lo <= 0 or hi <= 0 or hi < lo or decade_step < 1:
         return []
     kmin = math.floor(math.log10(lo))
     kmax = math.ceil(math.log10(hi))
     out: list[float] = []
-    for k in range(kmin - 1, kmax + 2):
+    # Start iteration at the nearest-below multiple of decade_step so the
+    # tick grid stays aligned to absolute decade indices, not to the
+    # viewport boundary.
+    k_start = (kmin - 1) - ((kmin - 1) % decade_step)
+    k_end = kmax + 2
+    for k in range(k_start, k_end, decade_step):
         base = 10.0 ** k
         for m in ladder:
             v = m * base
             if lo <= v <= hi:
                 out.append(v)
-    # Strict increasing — ladders are sorted and decades are iterated in order.
     return out
 
 
@@ -102,27 +118,34 @@ def nice_values(
     hi: float,
     min_count: int = 2,
     preferred: tuple[float, ...] | None = None,
+    decade_step: int = 1,
 ) -> list[float]:
     """Pick "nice" tick values covering [lo, hi] with >= ``min_count`` entries.
 
     ``preferred`` is an optional starting ladder — if it already yields
     enough values, we use it verbatim (preserves caller style). Otherwise
     we progress through ``_LADDERS`` until the threshold is met.
+
+    ``decade_step > 1`` is the "multiple decades between ticks" mode —
+    used by the core at extreme zoom-outs (span > ~20 decades) where
+    even one tick per decade becomes visual noise. The progressive
+    ladder fallback still applies within the sampled decades.
     """
     if lo <= 0 or hi <= 0 or hi <= lo:
         return []
 
     if preferred is not None:
-        vals = _enum_ladder(lo, hi, tuple(preferred))
+        vals = _enum_ladder(lo, hi, tuple(preferred), decade_step=decade_step)
         if len(vals) >= min_count:
             return vals
 
     for ladder in _LADDERS:
-        vals = _enum_ladder(lo, hi, ladder)
+        vals = _enum_ladder(lo, hi, ladder, decade_step=decade_step)
         if len(vals) >= min_count:
             return vals
 
     # Sub-decade, ultra-narrow: ladders all saturated. Linear nice stepping.
+    # decade_step is meaningless here — the span is sub-decade by definition.
     return _linear_fallback(lo, hi, min_count)
 
 

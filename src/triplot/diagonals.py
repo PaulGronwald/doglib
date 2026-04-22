@@ -116,20 +116,27 @@ def pick_displacement_values(
     *,
     min_count: int = 2,
     include_overflow: bool = False,
+    decade_step: int = 1,
 ) -> list[float]:
     """Pick constant-displacement nice values spanning the viewport.
 
     The legacy ``subdivisions`` arg is honoured as the preferred ladder —
     if it yields >= ``min_count`` values in range, those are returned
     verbatim. Otherwise the picker falls through denser ladders until at
-    least ``min_count`` gridlines survive. ``include_overflow=True`` pads
-    the range by ~15% of a decade so the adjacent out-of-view tick is
-    also emitted; edge-label overflow handling uses this.
+    least ``min_count`` gridlines survive.
+
+    ``decade_step > 1`` skips decades — used by the core to thin the
+    gridlines at extreme zoom-outs where every-decade ticks would
+    themselves crowd the plot (think 30-decade viewports: 30 ticks is
+    too many regardless of mantissa choice).
     """
     d_lo, d_hi = displacement_value_range(xlim, ylim)
     if include_overflow:
         d_lo, d_hi = _ticks.overflow_pad(d_lo, d_hi)
-    return _ticks.nice_values(d_lo, d_hi, min_count=min_count, preferred=subdivisions)
+    return _ticks.nice_values(
+        d_lo, d_hi, min_count=min_count, preferred=subdivisions,
+        decade_step=decade_step,
+    )
 
 
 def pick_acceleration_values(
@@ -140,10 +147,12 @@ def pick_acceleration_values(
     *,
     min_count: int = 2,
     include_overflow: bool = False,
+    decade_step: int = 1,
 ) -> list[float]:
     """Constant-acceleration picker. Values returned in label units
     (g's when g_value != 1). Same progressive-ladder guarantee as
-    :func:`pick_displacement_values`."""
+    :func:`pick_displacement_values`, with the same ``decade_step``
+    sampling knob for ultra-wide viewports."""
     a_lo, a_hi = acceleration_value_range(xlim, ylim)
     a_lo_label = a_lo / g_value
     a_hi_label = a_hi / g_value
@@ -151,6 +160,7 @@ def pick_acceleration_values(
         a_lo_label, a_hi_label = _ticks.overflow_pad(a_lo_label, a_hi_label)
     return _ticks.nice_values(
         a_lo_label, a_hi_label, min_count=min_count, preferred=subdivisions,
+        decade_step=decade_step,
     )
 
 

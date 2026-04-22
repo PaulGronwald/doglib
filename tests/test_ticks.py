@@ -85,3 +85,45 @@ def test_overflow_pad_noop_for_invalid():
     # Unchanged when the caller hands in garbage — picker below will
     # reject it and return [].
     assert ticks.overflow_pad(-1, 10) == (-1, 10)
+
+
+def test_decade_step_samples_every_nth_decade():
+    """decade_step=5 emits 1e0, 1e5, 1e10 but not 1e1..1e4."""
+    vals = ticks.nice_values(1.0, 1e10, preferred=(1.0,), decade_step=5)
+    assert 1.0 in vals
+    assert 1e5 in vals
+    assert 1e10 in vals
+    assert 10.0 not in vals
+    assert 100.0 not in vals
+
+
+def test_decade_step_anchored_to_absolute_decade():
+    """Stepping is anchored at k=0 so the tick set is pan-stable: two
+    overlapping viewports should emit the same ticks where they overlap,
+    not shift ticks around as the window pans."""
+    vals_a = ticks.nice_values(1.0, 1e10, preferred=(1.0,), decade_step=5)
+    vals_b = ticks.nice_values(1e3, 1e13, preferred=(1.0,), decade_step=5)
+    # Both ranges cover 1e5 and 1e10
+    assert 1e5 in vals_a and 1e5 in vals_b
+    assert 1e10 in vals_a and 1e10 in vals_b
+
+
+def test_gridline_count_bounded_at_extreme_zoom():
+    """The core must cap line count via decade_step once span > ~20 dec,
+    so a 100-decade zoom doesn't render 100 gridlines per family."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    import triplot  # noqa: F401
+
+    fig, ax = plt.subplots(subplot_kw={"projection": "tripartite"})
+    ax.set_xlim(1e-50, 1e50)
+    ax.set_ylim(1e-50, 1e50)
+    fig.canvas.draw()
+    # 100-decade span hitting decade_step=5 -> ~20 ticks per family max
+    for coll in (ax._disp_collection, ax._accel_collection):
+        n = len(coll.get_segments())
+        assert n <= 30, f"expected <=30 lines at 100-decade zoom, got {n}"
+        assert n >= 2, f"expected >=2 lines at 100-decade zoom, got {n}"
+    plt.close(fig)

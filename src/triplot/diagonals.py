@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from . import ticks as _ticks
+
 TWO_PI = 2.0 * math.pi
 
 
@@ -107,19 +109,49 @@ def acceleration_value_range(xlim, ylim) -> tuple[float, float]:
     return a_lo, a_hi
 
 
-def pick_displacement_values(xlim, ylim, subdivisions=(1.0, 2.0, 5.0)) -> list[float]:
+def pick_displacement_values(
+    xlim,
+    ylim,
+    subdivisions=(1.0, 2.0, 5.0),
+    *,
+    min_count: int = 2,
+    include_overflow: bool = False,
+) -> list[float]:
+    """Pick constant-displacement nice values spanning the viewport.
+
+    The legacy ``subdivisions`` arg is honoured as the preferred ladder —
+    if it yields >= ``min_count`` values in range, those are returned
+    verbatim. Otherwise the picker falls through denser ladders until at
+    least ``min_count`` gridlines survive. ``include_overflow=True`` pads
+    the range by ~15% of a decade so the adjacent out-of-view tick is
+    also emitted; edge-label overflow handling uses this.
+    """
     d_lo, d_hi = displacement_value_range(xlim, ylim)
-    return _nice_decades(d_lo, d_hi, subdivisions)
+    if include_overflow:
+        d_lo, d_hi = _ticks.overflow_pad(d_lo, d_hi)
+    return _ticks.nice_values(d_lo, d_hi, min_count=min_count, preferred=subdivisions)
 
 
-def pick_acceleration_values(xlim, ylim, g_value=1.0, subdivisions=(1.0, 2.0, 5.0)) -> list[float]:
-    """Returns values in the label unit (g's if g_value != 1). Internally the
-    line math uses raw (accel_in_vel_units_per_sec); we pick nice values in
-    label units then convert back when drawing."""
+def pick_acceleration_values(
+    xlim,
+    ylim,
+    g_value=1.0,
+    subdivisions=(1.0, 2.0, 5.0),
+    *,
+    min_count: int = 2,
+    include_overflow: bool = False,
+) -> list[float]:
+    """Constant-acceleration picker. Values returned in label units
+    (g's when g_value != 1). Same progressive-ladder guarantee as
+    :func:`pick_displacement_values`."""
     a_lo, a_hi = acceleration_value_range(xlim, ylim)
     a_lo_label = a_lo / g_value
     a_hi_label = a_hi / g_value
-    return _nice_decades(a_lo_label, a_hi_label, subdivisions)
+    if include_overflow:
+        a_lo_label, a_hi_label = _ticks.overflow_pad(a_lo_label, a_hi_label)
+    return _ticks.nice_values(
+        a_lo_label, a_hi_label, min_count=min_count, preferred=subdivisions,
+    )
 
 
 def displacement_segment(d: float, xlim, ylim) -> DiagSegment | None:

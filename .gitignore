@@ -11,3 +11,5 @@ build/
 
 # Generated-at-runtime outputs from example scripts
 /gallery.png
+/demo_*.png
+/demo_*.html

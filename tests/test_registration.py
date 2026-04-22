@@ -25,11 +25,24 @@ def test_default_log_scales():
     plt.close(fig)
 
 
-def test_aspect_defaults_to_equal():
-    """Backward-compat: no aspect kwarg means equal aspect (45° diagonals)."""
+def test_aspect_defaults_to_auto():
+    """Default aspect is 'auto' — interactive zoom feels natural, and the
+    diagonals are rotated in pixel space so they still render with the
+    correct slope at any aspect. Users who want pinned 45° diagonals opt
+    in with aspect='equal'."""
     import triplot  # noqa: F401
     fig, ax = plt.subplots(subplot_kw={"projection": "tripartite"})
-    assert ax.get_aspect() == 1.0  # matplotlib stores 'equal' as 1.0
+    assert ax.get_aspect() == "auto"
+    plt.close(fig)
+
+
+def test_aspect_equal_is_opt_in():
+    """aspect='equal' still works when requested explicitly."""
+    import triplot  # noqa: F401
+    fig, ax = plt.subplots(
+        subplot_kw={"projection": "tripartite", "aspect": "equal"},
+    )
+    assert ax.get_aspect() == 1.0
     plt.close(fig)
 
 

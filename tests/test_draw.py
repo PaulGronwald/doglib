@@ -74,31 +74,22 @@ def test_si_units():
 
 
 def test_fallback_labels_fill_edge_gap():
-    """Viewport chosen so the d=0.01 in line doesn't cross the top edge
-    (its top-crossing is out of the x-range) but does cross the right edge.
-    Without the fallback, such a line goes unlabeled. With the fallback, an
-    annotation is placed on the line inside the plot."""
+    """Viewport chosen so disp majors (d=0.001, 0.01) don't cross the top
+    edge but do cross the right — without the fallback, such a line goes
+    unlabeled. Only the *major* diagonals are labeled now (minors are
+    unlabeled grid decoration), so we exercise disp at this zoom and
+    leave accel geometry out of the assertion (accel majors at 10g /
+    100g both cross right cleanly)."""
     fig, ax = plt.subplots(subplot_kw={"projection": "tripartite"})
     ax.set_xlim(100, 300)
     ax.set_ylim(1, 30)
     fig.canvas.draw()
 
-    # At least one disp fallback label fired — these are label-eligible disp
-    # lines (mantissa in the label subset) that missed the top edge.
     disp_fb_visible = [a for a in ax._disp_fallback_labels if a.get_visible()]
     assert len(disp_fb_visible) > 0, "expected disp fallback labels in this viewport"
-
-    # And at least one accel fallback for the accel lines that missed right.
-    accel_fb_visible = [a for a in ax._accel_fallback_labels if a.get_visible()]
-    assert len(accel_fb_visible) > 0, "expected accel fallback labels in this viewport"
-
-    # Each fallback label should carry unit suffix and non-empty text
     for ann in disp_fb_visible:
         assert ann.get_text()
         assert "in" in ann.get_text()
-    for ann in accel_fb_visible:
-        assert ann.get_text()
-        assert "g" in ann.get_text()
 
     plt.close(fig)
 

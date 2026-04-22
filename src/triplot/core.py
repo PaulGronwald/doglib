@@ -129,24 +129,27 @@ class TripartiteCore:
     # ---- style subsets --------------------------------------------------
 
     def subdivisions(self, span_decades: float | None = None) -> tuple[float, ...]:
-        """Which mantissas get gridlines within each decade.
+        """Mantissas that get gridlines within each (sampled) decade.
 
-        When ``span_decades`` is given, the returned set is thinned for
-        wide viewports so zooming out doesn't flood the plot with
-        gridlines. Without this, a viewport spanning 12 decades would
-        emit 12x9 = 108 lines per family; the previous behaviour kept
-        that density no matter how wide the zoom, cluttering the screen.
+        Paired with :meth:`decade_step` to drive the full adaptive
+        gridline policy. This method picks *density within a decade*;
+        ``decade_step`` picks *which decades to sample* when the span is
+        large enough that even 1-per-decade would crowd the plot.
 
         Thresholds (per decade span) are tuned so visual density on a
-        ~700-1000px axes stays roughly constant:
+        ~700-1000px axes stays roughly constant regardless of zoom:
 
-        | span          | gridlines per decade               |
-        | ------------- | ---------------------------------- |
-        | <= 2 decades  | full ``{1..9}`` (seismic/dplot)    |
-        | <= 4 decades  | ``{1, 2, 3, 5, 7}``                |
-        | <= 7 decades  | ``{1, 2, 5}``                      |
-        | <= 12 decades | ``{1, 3}``                         |
-        | > 12 decades  | ``{1}`` — one major per decade     |
+        | span           | mantissa ladder           | ticks/decade |
+        | -------------- | ------------------------- | ------------ |
+        | <= 2           | ``{1..9}``                | 9            |
+        | <= 4           | ``{1, 2, 3, 5, 7}``       | 5            |
+        | <= 8           | ``{1, 2, 5}``             | 3            |
+        | <= 15          | ``{1, 3}``                | 2            |
+        | > 15           | ``{1}``                   | 1            |
+
+        Above ~20-decade spans :meth:`decade_step` kicks in and starts
+        skipping decades themselves, so a 100-decade viewport doesn't
+        emit 100 "1-per-decade" ticks.
 
         User overrides via ``grid_diagonal(which=...)`` are always
         respected verbatim — we only adapt the default tier.
@@ -165,15 +168,48 @@ class TripartiteCore:
         if span_decades is None:
             return (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
 
+        # Span is measured on the *effective sampled* decade count — i.e.
+        # span / decade_step. Callers should pass (raw_span / step) so
+        # the mantissa ladder maps to the number of decades that will
+        # actually be visited, not the raw viewport width. The core does
+        # this coupling in rebuild().
         if span_decades <= 2.0:
             return (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
         if span_decades <= 4.0:
             return (1.0, 2.0, 3.0, 5.0, 7.0)
-        if span_decades <= 7.0:
+        if span_decades <= 8.0:
             return (1.0, 2.0, 5.0)
-        if span_decades <= 12.0:
+        if span_decades <= 15.0:
             return (1.0, 3.0)
         return (1.0,)
+
+    def decade_step(self, span_decades: float) -> int:
+        """Sample every Nth decade when the viewport is wide enough that
+        one-per-decade would crowd the plot. Combines with
+        :meth:`subdivisions` to cap visual tick density at ~15-20 per
+        axis regardless of how far the user zooms out.
+
+        | raw span (decades) | decade_step | ticks-per-axis target  |
+        | ------------------ | ----------- | ---------------------- |
+        | <= 20              | 1           | up to ~20              |
+        | <= 40              | 2           | ~10-20                 |
+        | <= 100             | 5           | ~8-20                  |
+        | <= 200             | 10          | ~10-20                 |
+        | > 200              | 25          | bounded                |
+
+        The 25 upper bound is the "we'll handle 10^300 some other day"
+        escape hatch — past this the viewport is floating-point-sketchy
+        anyway, but we at least don't render hundreds of lines.
+        """
+        if span_decades <= 20.0:
+            return 1
+        if span_decades <= 40.0:
+            return 2
+        if span_decades <= 100.0:
+            return 5
+        if span_decades <= 200.0:
+            return 10
+        return 25
 
     def label_subdivisions(self) -> tuple[float, ...]:
         """Which mantissas get numeric labels."""
@@ -219,15 +255,24 @@ class TripartiteCore:
         g = self._g_value()
         # Adapt gridline density to the visible decade span of each family's
         # constant-value range. Disp lines span d = v/(2π f); accel lines
-        # span a = 2π f v. Each family can have a different span (the
-        # accel axis covers x*y decades while disp covers x+y^-1), so
-        # subdivisions are chosen per-family for balanced visual density.
+        # span a = 2π f v. Each family can have a different span, so pick
+        # subdivisions + decade_step independently for balanced density.
+        #
+        # Two-knob model:
+        #   - decade_step picks WHICH decades get ticks (every 1st, 2nd,
+        #     5th, ...) — engages for ultra-wide spans.
+        #   - subdivisions picks WHICH mantissas within each sampled
+        #     decade. Its input is the *sampled* decade count
+        #     (span/step), not the raw span, so the ladder maps to the
+        #     number of decades that will actually be visited.
         d_lo, d_hi = _diag.displacement_value_range(xlim, ylim)
         a_lo, a_hi = _diag.acceleration_value_range(xlim, ylim)
         disp_span = _decade_span(d_lo, d_hi)
         accel_span = _decade_span(a_lo / g, a_hi / g)
-        disp_subs = self.subdivisions(span_decades=disp_span)
-        accel_subs = self.subdivisions(span_decades=accel_span)
+        disp_step = self.decade_step(disp_span)
+        accel_step = self.decade_step(accel_span)
+        disp_subs = self.subdivisions(span_decades=disp_span / disp_step)
+        accel_subs = self.subdivisions(span_decades=accel_span / accel_step)
         label_subs = self.label_subdivisions()
 
         # Pick gridlines on the actual viewport range (not overflow-padded) so
@@ -237,7 +282,8 @@ class TripartiteCore:
         # the "wrong" spine — no padding needed here.
         disp_segs = []
         for v in _diag.pick_displacement_values(
-            xlim, ylim, subdivisions=disp_subs, min_count=2, include_overflow=False,
+            xlim, ylim, subdivisions=disp_subs, min_count=2,
+            include_overflow=False, decade_step=disp_step,
         ):
             seg = _diag.displacement_segment(v, xlim, ylim)
             if seg is not None:
@@ -245,8 +291,8 @@ class TripartiteCore:
 
         accel_segs = []
         for v in _diag.pick_acceleration_values(
-            xlim, ylim, g_value=g, subdivisions=accel_subs,
-            min_count=2, include_overflow=False,
+            xlim, ylim, g_value=g, subdivisions=accel_subs, min_count=2,
+            include_overflow=False, decade_step=accel_step,
         ):
             seg = _diag.acceleration_segment(v, xlim, ylim, g_value=g)
             if seg is not None:

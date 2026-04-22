@@ -13,3 +13,4 @@ build/
 /gallery.png
 /demo_*.png
 /demo_*.html
+/examples/plotly_zoom_*.html

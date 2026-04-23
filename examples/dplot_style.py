@@ -41,5 +41,5 @@ ax.set_xlabel("Frequency, Hz")
 ax.set_ylabel("PseudoVelocity, in/sec")
 ax.legend(loc="lower center", framealpha=0.95)
 
-fig.savefig(r"C:\Users\pmarq\source\repos\triplot\examples\dplot_style.png", dpi=140, bbox_inches="tight")
+fig.savefig(r"examples\dplot_style.png", dpi=140, bbox_inches="tight")
 print("wrote dplot_style.png")

@@ -169,8 +169,8 @@ def _nice_major_step(span_decades: float, target_major: int) -> int:
 def major_minor_split(
     lo: float,
     hi: float,
-    target_major: int = 6,
-    target_minor_per_major: int = 4,
+    target_major: int = 10,
+    target_minor_per_major: int = 10,
 ) -> tuple[list[float], list[float]]:
     """Split [lo, hi] into logical major + minor values on a log axis.
 

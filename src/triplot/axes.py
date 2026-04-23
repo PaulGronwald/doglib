@@ -166,6 +166,7 @@ class TripartiteAxes(Axes):
         self._backend: MatplotlibBackend | None = None
         self._cache_key = None
         self._user_isolines: list[_isolines.UserIsoline] = []
+        self._user_span_isolines: list[_isolines.UserSpanIsoline] = []
 
         super().__init__(*args, **kwargs)
 
@@ -479,8 +480,16 @@ class TripartiteAxes(Axes):
         self._invalidate_cache()
         return spec
 
-    def remove_isoline(self, spec: _isolines.UserIsoline) -> None:
-        """Remove a previously-added isoline and its artists."""
+    def remove_isoline(self, spec) -> None:
+        """Remove a previously-added isoline or span-isoline."""
+        if isinstance(spec, _isolines.UserSpanIsoline):
+            try:
+                self._user_span_isolines.remove(spec)
+            except ValueError:
+                return
+            spec.remove()
+            self._invalidate_cache()
+            return
         try:
             self._user_isolines.remove(spec)
         except ValueError:
@@ -489,13 +498,56 @@ class TripartiteAxes(Axes):
         self._invalidate_cache()
 
     def get_isolines(self) -> list[_isolines.UserIsoline]:
-        """Snapshot of attached user isolines."""
+        """Snapshot of attached user isolines (viewport-spanning)."""
         return list(self._user_isolines)
+
+    def add_span_isoline(
+        self,
+        family: str,
+        value: float,
+        f_range: tuple[float, float],
+        *,
+        label: str | None = None,
+        line_style: dict | None = None,
+        label_style: dict | None = None,
+    ) -> _isolines.UserSpanIsoline:
+        """Attach a finite-span isoline bounded by ``f_range`` with a
+        midpoint-sticking label.
+
+        Like :meth:`add_isoline` but:
+          * the line is drawn only between ``f_range[0]`` and
+            ``f_range[1]`` on the frequency axis
+          * no mirror-spine tick — the identifier is an in-plot text
+            label instead
+          * the label sits at the geometric midpoint of whichever
+            portion of the line is currently visible, so as you pan and
+            the line crops, the label slides to stay centered on what's
+            on screen; when the line leaves the viewport entirely the
+            label hides
+
+        Same family aliases as :meth:`add_isoline`
+        (``'disp'``/``'accel'``/``'vel'``). Returns a
+        :class:`~triplot.isolines.UserSpanIsoline` with ``.line`` and
+        ``.label`` matplotlib artists for direct styling.
+        """
+        spec = _isolines.add_span(
+            self, family, float(value), f_range,
+            label=label, line_style=line_style, label_style=label_style,
+        )
+        self._user_span_isolines.append(spec)
+        g = self._core._g_value()
+        _isolines.update_span(self, spec, g)
+        self._invalidate_cache()
+        return spec
+
+    def get_span_isolines(self) -> list[_isolines.UserSpanIsoline]:
+        """Snapshot of attached finite-span isolines."""
+        return list(self._user_span_isolines)
 
     def _update_user_isolines(self) -> None:
         """Refresh each user isoline against the current viewport.
         Called from :meth:`draw` after the grid rebuild."""
-        if not self._user_isolines:
+        if not self._user_isolines and not self._user_span_isolines:
             return
         g = self._core._g_value()
         for spec in self._user_isolines:
@@ -503,6 +555,11 @@ class TripartiteAxes(Axes):
                 _isolines.update(self, spec, g)
             except Exception:
                 # Never let a single bad isoline break the draw loop.
+                continue
+        for spec in self._user_span_isolines:
+            try:
+                _isolines.update_span(self, spec, g)
+            except Exception:
                 continue
 
     # ---- backward-compat properties (test / debug surface) --------------
@@ -712,6 +769,7 @@ class TripartiteAxes(Axes):
         # detach in clear() — drop our references so we don't carry
         # zombie specs pointing at removed artists.
         self._user_isolines = []
+        self._user_span_isolines = []
         result = super().clear()
         if self._backend is not None:
             try:

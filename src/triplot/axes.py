@@ -24,6 +24,7 @@ from matplotlib.ticker import Formatter, Locator
 from . import ticks as _ticks
 
 from . import core as _core
+from . import isolines as _isolines
 from .backends.base import DiagramFamily
 from .backends.matplotlib_backend import MatplotlibBackend
 from .units import UnitSystem, resolve as _resolve_units
@@ -164,6 +165,7 @@ class TripartiteAxes(Axes):
         self._tri_aspect = aspect
         self._backend: MatplotlibBackend | None = None
         self._cache_key = None
+        self._user_isolines: list[_isolines.UserIsoline] = []
 
         super().__init__(*args, **kwargs)
 
@@ -430,6 +432,79 @@ class TripartiteAxes(Axes):
     def get_damping(self):
         return self._core.damping
 
+    # ---- user-anchored isolines -----------------------------------------
+
+    def add_isoline(
+        self,
+        family: str,
+        value: float,
+        *,
+        label: str | None = None,
+        line_style: dict | None = None,
+        tick_style: dict | None = None,
+    ) -> _isolines.UserIsoline:
+        """Attach a permanent isoline for a specific constant value.
+
+        ``family`` is one of ``'disp'`` / ``'displacement'``,
+        ``'accel'`` / ``'acceleration'``, ``'vel'`` / ``'velocity'``
+        (aliases documented in :mod:`triplot.isolines`). ``value`` is
+        in the family's label units (inches for imperial disp, g's for
+        ``accel_in_g``, in/s for imperial velocity).
+
+        The returned :class:`~triplot.isolines.UserIsoline` carries the
+        matplotlib artists — ``.line`` (the diagonal itself), ``.tick``
+        (the mirror-spine tick), and ``.label`` (optional text). Tweak
+        style directly, e.g.::
+
+            iso = ax.add_isoline('disp', 0.5, label='0.5 in', line_style={'color': 'red'})
+            iso.line.set_linewidth(2.0)
+
+        The artists re-compute on every zoom/pan so the tick follows
+        the crossing.
+        """
+        spec = _isolines.add(
+            self,
+            family, float(value),
+            label=label,
+            line_style=line_style,
+            tick_style=tick_style,
+        )
+        self._user_isolines.append(spec)
+        # Update once now so the spec is visible immediately — the
+        # rebuild cycle only kicks in on draw, and a caller showing an
+        # already-displayed figure expects the isoline to appear
+        # without an extra redraw.
+        g = self._core._g_value()
+        _isolines.update(self, spec, g)
+        self._invalidate_cache()
+        return spec
+
+    def remove_isoline(self, spec: _isolines.UserIsoline) -> None:
+        """Remove a previously-added isoline and its artists."""
+        try:
+            self._user_isolines.remove(spec)
+        except ValueError:
+            return
+        spec.remove()
+        self._invalidate_cache()
+
+    def get_isolines(self) -> list[_isolines.UserIsoline]:
+        """Snapshot of attached user isolines."""
+        return list(self._user_isolines)
+
+    def _update_user_isolines(self) -> None:
+        """Refresh each user isoline against the current viewport.
+        Called from :meth:`draw` after the grid rebuild."""
+        if not self._user_isolines:
+            return
+        g = self._core._g_value()
+        for spec in self._user_isolines:
+            try:
+                _isolines.update(self, spec, g)
+            except Exception:
+                # Never let a single bad isoline break the draw loop.
+                continue
+
     # ---- backward-compat properties (test / debug surface) --------------
 
     @property
@@ -624,9 +699,19 @@ class TripartiteAxes(Axes):
             except Exception as exc:  # noqa: BLE001 — never break draw()
                 warnings.warn(f"triplot: diagonal rebuild failed: {exc!r}", stacklevel=2)
                 self._cache_key = None
+        # User isolines refresh every draw regardless of the cache
+        # signature — their tick position depends on xlim/ylim, and
+        # those deltas are what cache misses detect anyway. Running the
+        # per-isoline update outside the cache gate keeps the grid
+        # rebuild fast while still tracking isolines through zoom/pan.
+        self._update_user_isolines()
         super().draw(renderer)
 
     def clear(self):
+        # User isolines own Line2D/Text artists that matplotlib will
+        # detach in clear() — drop our references so we don't carry
+        # zombie specs pointing at removed artists.
+        self._user_isolines = []
         result = super().clear()
         if self._backend is not None:
             try:

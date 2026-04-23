@@ -403,3 +403,255 @@ def _hide(spec: UserIsoline) -> None:
     spec.tick.set_visible(False)
     if spec.label is not None:
         spec.label.set_visible(False)
+
+
+# ---------------------------------------------------------------------------
+# Span isolines — finite in frequency, label sticks to visible midpoint
+# ---------------------------------------------------------------------------
+#
+# Same family math as UserIsoline but the line is bounded by an explicit
+# ``f_range = (f_start, f_end)``. The label is a matplotlib Text that sits
+# at the geometric midpoint of whatever portion of the line is currently
+# in view — "squish" behaviour: as the viewport crops the line, the label
+# slides along the visible portion to stay centered. When the entire
+# (f_range × family-value) line leaves the viewport, the label is hidden
+# (so you don't get phantom text hanging off-screen).
+
+
+@dataclass
+class UserSpanIsoline:
+    """Finite isoline with a midpoint-sticking label.
+
+    Like :class:`UserIsoline` but:
+      * limited to ``f_range = (f_start, f_end)``
+      * no mirror-spine tick
+      * ``label`` tracks the visible midpoint (log-geometric) and
+        rotates with the on-screen line slope (in pixel space)
+
+    ``line`` and ``label`` are plain matplotlib artists — tweak styles
+    directly.
+    """
+    family: str
+    value: float
+    f_start: float
+    f_end: float
+    line: Line2D
+    label: Text
+    label_text: str
+    line_style: dict = field(default_factory=dict)
+    label_style: dict = field(default_factory=dict)
+
+    def remove(self) -> None:
+        for art in (self.line, self.label):
+            if art is None:
+                continue
+            try:
+                art.remove()
+            except (ValueError, NotImplementedError, AttributeError):
+                pass
+
+
+_DEFAULT_SPAN_LABEL_STYLE = dict(
+    color="#8e44ad", fontsize=9, family="serif",
+)
+
+
+def _nominal_span_endpoints(
+    family: str, value: float, f_start: float, f_end: float, g: float,
+):
+    """Compute the (f, v) endpoints of the constant-family line over
+    ``[f_start, f_end]``. No clipping to viewport — that's layered on
+    top. Returns ``((f0, v0), (f1, v1))`` with f0 < f1."""
+    if f_start > f_end:
+        f_start, f_end = f_end, f_start
+    if family == "disp":
+        v0 = _TWO_PI * f_start * value
+        v1 = _TWO_PI * f_end * value
+    elif family == "accel":
+        a = value * g
+        v0 = a / (_TWO_PI * f_start)
+        v1 = a / (_TWO_PI * f_end)
+    else:  # vel — horizontal, v is constant
+        v0 = value
+        v1 = value
+    return (f_start, v0), (f_end, v1)
+
+
+def _clip_to_viewport(
+    p0: tuple[float, float], p1: tuple[float, float], xlim, ylim,
+):
+    """Clip the segment ``p0->p1`` to the viewport. Returns clipped
+    endpoints or ``None`` if fully outside. Log-space aware (works in
+    linear data coords but assumes positive log-axis values)."""
+    if xlim[0] <= 0 or ylim[0] <= 0:
+        return None
+    (x0, y0), (x1, y1) = p0, p1
+    if x0 <= 0 or x1 <= 0 or y0 <= 0 or y1 <= 0:
+        return None
+    # Parameterize in log space so clipping is a Liang-Barsky-style
+    # scalar interpolation — cheap, stable.
+    lx0, ly0 = math.log10(x0), math.log10(y0)
+    lx1, ly1 = math.log10(x1), math.log10(y1)
+    lxmin, lxmax = math.log10(xlim[0]), math.log10(xlim[1])
+    lymin, lymax = math.log10(ylim[0]), math.log10(ylim[1])
+
+    dx = lx1 - lx0
+    dy = ly1 - ly0
+
+    t_enter = 0.0
+    t_exit = 1.0
+
+    # Clip against each of the four viewport edges in log space.
+    for p, q in (
+        (-dx, lx0 - lxmin),   # left   p*t <= q
+        ( dx, lxmax - lx0),   # right
+        (-dy, ly0 - lymin),   # bottom
+        ( dy, lymax - ly0),   # top
+    ):
+        if abs(p) < 1e-30:
+            if q < 0:
+                return None  # line parallel to edge AND outside — no visible portion
+            continue
+        t = q / p
+        if p < 0:
+            if t > t_exit:
+                return None
+            if t > t_enter:
+                t_enter = t
+        else:
+            if t < t_enter:
+                return None
+            if t < t_exit:
+                t_exit = t
+
+    if t_exit < t_enter:
+        return None
+
+    # Reconstruct visible endpoints in linear coords
+    f_a = 10.0 ** (lx0 + dx * t_enter)
+    v_a = 10.0 ** (ly0 + dy * t_enter)
+    f_b = 10.0 ** (lx0 + dx * t_exit)
+    v_b = 10.0 ** (ly0 + dy * t_exit)
+    return (f_a, v_a), (f_b, v_b)
+
+
+def add_span(
+    ax,
+    family: str,
+    value: float,
+    f_range: tuple[float, float],
+    *,
+    label: Optional[str] = None,
+    line_style: Optional[dict] = None,
+    label_style: Optional[dict] = None,
+) -> UserSpanIsoline:
+    """Attach a finite-span isoline with a midpoint-sticking label.
+
+    Unlike :func:`add`, which draws a viewport-spanning isoline with a
+    mirror-spine tick, this variant is bounded on both ends by
+    ``f_range = (f_start, f_end)`` and carries an in-plot text label
+    rather than an axis tick.
+
+    Label behaviour:
+      * rotates to match the line's on-screen slope (pixel-space angle,
+        so aspect-ratio changes keep the rotation correct)
+      * sits at the geometric midpoint of whatever *visible* portion of
+        the line is in the current viewport
+      * hides when the line is fully outside the viewport
+    """
+    fam = _canonical_family(family)
+    if value <= 0:
+        raise ValueError(f"isoline value must be positive, got {value}")
+    if f_range[0] <= 0 or f_range[1] <= 0 or f_range[0] == f_range[1]:
+        raise ValueError(
+            f"f_range must be two positive, distinct frequencies; got {f_range!r}"
+        )
+
+    ls = dict(_DEFAULT_LINE_STYLE)
+    if line_style:
+        ls.update(line_style)
+    tx_style = dict(_DEFAULT_SPAN_LABEL_STYLE)
+    if label_style:
+        tx_style.update(label_style)
+
+    line = _make_line(ax, ls)
+    text = Text(0, 0, label or "", **tx_style)
+    text.set_ha("center")
+    text.set_va("center")
+    text.set_rotation_mode("anchor")
+    try:
+        text.set_in_layout(False)
+    except AttributeError:
+        pass
+    ax.add_artist(text)
+
+    spec = UserSpanIsoline(
+        family=fam,
+        value=float(value),
+        f_start=float(f_range[0]),
+        f_end=float(f_range[1]),
+        line=line,
+        label=text,
+        label_text=label or "",
+        line_style=ls,
+        label_style=tx_style,
+    )
+    return spec
+
+
+def update_span(ax, spec: UserSpanIsoline, g: float) -> None:
+    """Recompute the visible portion of ``spec`` and reposition its
+    label. Cheap — runs per-frame."""
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    if xlim[0] <= 0 or ylim[0] <= 0 or xlim[1] <= xlim[0] or ylim[1] <= ylim[0]:
+        _hide_span(spec)
+        return
+
+    p0, p1 = _nominal_span_endpoints(
+        spec.family, spec.value, spec.f_start, spec.f_end, g,
+    )
+    clipped = _clip_to_viewport(p0, p1, xlim, ylim)
+    if clipped is None:
+        _hide_span(spec)
+        return
+
+    (fa, va), (fb, vb) = clipped
+    spec.line.set_data([fa, fb], [va, vb])
+    spec.line.set_visible(True)
+
+    if not spec.label_text:
+        spec.label.set_visible(False)
+        return
+
+    # Midpoint of the visible portion in log space (== geometric midpoint
+    # in linear space). This is the "squish" behaviour — as the viewport
+    # crops the line, the label slides toward the visible middle rather
+    # than hanging at an invisible nominal center.
+    fm = math.sqrt(fa * fb)
+    vm = math.sqrt(va * vb)
+
+    # Rotation in pixel space so the label rides with the line's
+    # on-screen slope, not the data-space slope (which would be wrong
+    # under aspect='auto' or asymmetric zoom).
+    try:
+        pa = ax.transData.transform((fa, va))
+        pb = ax.transData.transform((fb, vb))
+        angle = math.degrees(math.atan2(pb[1] - pa[1], pb[0] - pa[0]))
+        # Keep text upright: clamp rotation to [-90, 90].
+        if angle > 90:
+            angle -= 180
+        if angle < -90:
+            angle += 180
+    except Exception:
+        angle = 0.0
+
+    spec.label.set_position((fm, vm))
+    spec.label.set_rotation(angle)
+    spec.label.set_text(spec.label_text)
+    spec.label.set_visible(True)
+
+
+def _hide_span(spec: UserSpanIsoline) -> None:
+    spec.line.set_visible(False)
+    spec.label.set_visible(False)

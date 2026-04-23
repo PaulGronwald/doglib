@@ -40,11 +40,14 @@ DEFAULT_LINE_STYLE = dict(color="0.45", linewidth=0.55, linestyle="-", alpha=1.0
 DEFAULT_MAJOR_LINE_STYLE = dict(color="0.25", linewidth=0.85, linestyle="-", alpha=1.0)
 DEFAULT_MINOR_LINE_STYLE = dict(color="0.65", linewidth=0.35, linestyle="-", alpha=1.0)
 DEFAULT_LABEL_STYLE = dict(
-    color="0.15", fontsize=7, halign="center", valign="center", family="serif",
+    color="0.15", fontsize=7, halign="center", valign="center",
+    # family intentionally omitted so labels inherit matplotlib's
+    # rcParams default — users set a project-wide font once and every
+    # triplot label picks it up.
 )
 DEFAULT_AXIS_TITLE_STYLE = dict(
     color="0.05", fontsize=10, halign="center", valign="center",
-    family="serif", fontstyle="italic", fontweight="bold",
+    fontstyle="italic", fontweight="bold",
 )
 
 # Minimum on-screen spacing between kept labels in pixel units. Values were
@@ -332,11 +335,13 @@ class TripartiteCore:
                 backend.set_labels(fam, "fallback", [])
                 backend.set_ticks(fam, [])
 
-        titles_on = (
-            self.show_diag_titles
-            if self.show_diag_titles is not None
-            else (self.style == "seismic")
-        )
+        # Big centered "Displacement" / "Acceleration" callouts across
+        # the middle of the plot. Default to OFF for all styles —
+        # modern viewing habits (interactive zoom, overlaid curves) make
+        # the callouts feel crowded and redundant with edge labels.
+        # Users who want the classic seismic look can opt in via
+        # ``show_diag_titles=True`` or ``set_show_diag_titles(True)``.
+        titles_on = bool(self.show_diag_titles) if self.show_diag_titles is not None else False
         if titles_on:
             self._emit_axis_title(backend, DiagramFamily.DISPLACEMENT, disp_label_segs)
             self._emit_axis_title(backend, DiagramFamily.ACCELERATION, accel_label_segs)

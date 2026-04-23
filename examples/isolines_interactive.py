@@ -14,13 +14,20 @@ Two isoline flavours coexist on this plot:
         A mirror-spine tick marks the value on the opposite spine from
         the grid's own tick family:
 
-            disp   grid: top     -> user: bottom
-            accel  grid: right   -> user: left
-            vel    grid: (left)  -> user: right
+            disp   grid: top     -> user: bottom  (fallback: left)
+            accel  grid: right   -> user: left    (fallback: top)
+            vel    grid: (left)  -> user: left
 
-        The tick tracks the line's spine crossing through zoom/pan and
-        falls back to an orthogonal spine when the preferred one isn't
-        crossed (e.g. very tight viewports near a corner).
+        The tick is drawn as a short ROTATED TANGENT at the crossing —
+        visually a little extension of the line itself, not a straight
+        perpendicular notch. Rotation tracks the on-screen slope so it
+        stays coherent at any aspect / zoom.
+
+        Labels use a light white glyph halo (patheffects stroke) for
+        readability over the grid, and inherit font family / size from
+        matplotlib's rcParams by default — set a project-wide font
+        once and every triplot element picks it up. Override
+        per-isoline via ``label_style={...}``.
 
     (B) ax.add_span_isoline(family, value, f_range=(lo, hi), label=...)
 

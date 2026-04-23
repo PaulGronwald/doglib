@@ -97,6 +97,7 @@ axD.set_title("(D) shock style + annotate / axvline still work")
 fig.suptitle("triplot -- reusable tripartite projection with user-tunable styling",
              fontsize=14)
 fig.tight_layout()
-out = r"examples\custom_styling.png"
+import os
+out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_styling.png")
 fig.savefig(out, dpi=120, bbox_inches="tight")
 print(f"wrote {out}")

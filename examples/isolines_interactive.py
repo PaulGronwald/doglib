@@ -11,17 +11,17 @@ Two isoline flavours coexist on this plot:
         geometry on LOG axes, which matplotlib's own ``ax.axline`` can't
         handle correctly (axline interpolates in linear data space).
 
-        A mirror-spine tick marks the value on the opposite spine from
-        the grid's own tick family:
+        A user-spine tick anchor marks the value (preferred/fallback
+        per family):
 
-            disp   grid: top     -> user: bottom  (fallback: left)
-            accel  grid: right   -> user: left    (fallback: top)
+            disp   grid: top     -> user: top     (fallback: right)
+            accel  grid: right   -> user: right   (fallback: bottom)
             vel    grid: (left)  -> user: left
 
-        The tick is drawn as a short ROTATED TANGENT at the crossing —
-        visually a little extension of the line itself, not a straight
-        perpendicular notch. Rotation tracks the on-screen slope so it
-        stays coherent at any aspect / zoom.
+        The optional small tangent segment near the crossing is OFF by
+        default (``draw_tick_segment=False``) and can be enabled per
+        isoline. Rotation tracks the on-screen slope so it stays
+        coherent at any aspect / zoom.
 
         Labels use a light white glyph halo (patheffects stroke) for
         readability over the grid, and inherit font family / size from
@@ -103,18 +103,21 @@ def main():
     d_iso = ax.add_isoline(
         "disp", 0.5,
         label="d = 0.5 in",
+        draw_tick_segment=True,
         line_style={"color": "#c0392b", "linewidth": 1.4, "linestyle": "-"},
         tick_style={"color": "#c0392b", "linewidth": 1.2},
     )
     a_iso = ax.add_isoline(
         "accel", 2.0,
         label="a = 2 g",
+        draw_tick_segment=True,
         line_style={"color": "#2980b9", "linewidth": 1.4, "linestyle": "-"},
         tick_style={"color": "#2980b9", "linewidth": 1.2},
     )
     v_iso = ax.add_isoline(
         "vel", 10.0,
         label="v = 10 in/s",
+        draw_tick_segment=True,
         line_style={"color": "#27ae60", "linewidth": 1.4, "linestyle": "-"},
         tick_style={"color": "#27ae60", "linewidth": 1.2},
     )

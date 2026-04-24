@@ -6,15 +6,14 @@ one auto-recomputing its clipped segment + edge tick on every zoom /
 pan. Independent from the dynamic gridline picker — these lines are
 deliberate annotations from the caller, not automatic grid decoration.
 
-Tick placement rules — ticks sit on the **opposite spine** from the
-family's grid ticks so they read visually as "user-anchored", not
-"grid":
+Tick placement rules — ticks are placed on a dedicated user spine per
+family so they read visually as "user-anchored", not "grid":
 
 +----------+--------------+-------------------+
 | family   | grid ticks   | user-isoline tick |
 +==========+==============+===================+
-| disp     | top spine    | bottom spine      |
-| accel    | right spine  | left spine        |
+| disp     | top spine    | top spine         |
+| accel    | right spine  | right spine       |
 | velocity | (yaxis left) | left spine        |
 +----------+--------------+-------------------+
 
@@ -23,13 +22,17 @@ on-screen slope (rotated tangents at the crossing point) rather than
 as static perpendicular notches — they read as little extensions of
 the line, visually reinforcing which line they belong to.
 
-When geometry means the isoline doesn't cross its opposite spine
+When geometry means the isoline doesn't cross its preferred spine
 (common near the corners of the viewport), the tick falls back to a
 secondary spine:
 
-    disp    bottom -> left      (mirror of grid's top->right)
-    accel   left   -> top       (mirror of grid's right->bottom)
+    disp    top   -> right
+    accel   right -> bottom
     vel     left   -> (hidden)  (horizontal lines only have one spine)
+
+The small tangent tick segment can be suppressed per-isoline via
+``draw_tick_segment=False`` (default). Labels still anchor to the spine
+crossing and continue to track pan/zoom even when the segment is hidden.
 
 Labels use a light white glyph halo (matplotlib patheffects stroke)
 for readability — same technique as the grid overflow labels. Font
@@ -107,6 +110,7 @@ class UserIsoline:
     label_text: str = ""
     line_style: dict = field(default_factory=dict)
     tick_style: dict = field(default_factory=dict)
+    draw_tick_segment: bool = False
 
     def remove(self) -> None:
         """Detach all artists from the axes. After calling this the
@@ -186,55 +190,47 @@ def _compute_segment(family: str, value: float, xlim, ylim, g: float):
 
 
 def _opposite_edge_crossing(family: str, value: float, xlim, ylim, g: float):
-    """Crossing of the isoline with the OPPOSITE spine (user-tick edge).
+    """Crossing of the isoline with the preferred/fallback user spine.
 
     Returns ``(edge, position)`` where ``edge`` is one of
     ``'top' | 'bottom' | 'left' | 'right'`` and ``position`` is the
-    coordinate along that spine. Returns ``None`` if the opposite edge
+    coordinate along that spine. Returns ``None`` if no designated edge
     isn't crossed.
 
-    Preferred opposite (mirror of the grid's designated edge for the
-    same family):
+    Preferred/fallback mapping:
 
     +---------+---------------+------------------+------------------+
     | family  | grid edge     | user preferred   | user fallback    |
     +=========+===============+==================+==================+
-    | disp    | top           | bottom           | left             |
-    | accel   | right         | left             | top              |
+    | disp    | top           | top              | right            |
+    | accel   | right         | right            | bottom           |
     | vel     | (yaxis left)  | left             | (hidden)         |
     +---------+---------------+------------------+------------------+
-
-    The accel fallback was ``bottom`` in an earlier revision — fixed to
-    ``top`` so an accel line that misses the left spine while the
-    viewport's bottom spine is covered by some steep descent still
-    picks up its tick on a sensible edge (top spine, where the line
-    necessarily passes if it can't exit left but exits above the
-    viewport instead).
     """
     xmin, xmax = xlim
     ymin, ymax = ylim
 
     if family == "disp":
-        # Preferred: bottom. Isoline v = 2π f d crosses y=ymin at f = ymin/(2π d)
-        f_bot = ymin / (_TWO_PI * value)
-        if xmin <= f_bot <= xmax:
-            return "bottom", f_bot
-        # Fallback: left. x=xmin -> v = 2π xmin d
-        v_left = _TWO_PI * xmin * value
-        if ymin <= v_left <= ymax:
-            return "left", v_left
+        # Preferred: top. Isoline v = 2π f d crosses y=ymax at f = ymax/(2π d)
+        f_top = ymax / (_TWO_PI * value)
+        if xmin <= f_top <= xmax:
+            return "top", f_top
+        # Fallback: right. x=xmax -> v = 2π xmax d
+        v_right = _TWO_PI * xmax * value
+        if ymin <= v_right <= ymax:
+            return "right", v_right
         return None
 
     if family == "accel":
         a = value * g
-        # Preferred: left. x=xmin -> v = a/(2π xmin)
-        v_left = a / (_TWO_PI * xmin)
-        if ymin <= v_left <= ymax:
-            return "left", v_left
-        # Fallback: top. y=ymax -> f = a/(2π ymax)
-        f_top = a / (_TWO_PI * ymax)
-        if xmin <= f_top <= xmax:
-            return "top", f_top
+        # Preferred: right. x=xmax -> v = a/(2π xmax)
+        v_right = a / (_TWO_PI * xmax)
+        if ymin <= v_right <= ymax:
+            return "right", v_right
+        # Fallback: bottom. y=ymin -> f = a/(2π ymin)
+        f_bottom = a / (_TWO_PI * ymin)
+        if xmin <= f_bottom <= xmax:
+            return "bottom", f_bottom
         return None
 
     # vel: horizontal line at y=value crosses BOTH left and right spines
@@ -294,7 +290,6 @@ def _tangent_tick_endpoints(ax, crossing_data, nominal_endpoints, edge):
     direction == pixel-space direction from one endpoint to the other,
     flipped if needed so it points into the plot relative to ``edge``.
     """
-    import numpy as np
     trans = ax.transData.transform
     px_cross = trans(crossing_data)
     pa, pb = trans(nominal_endpoints[0]), trans(nominal_endpoints[1])
@@ -336,6 +331,7 @@ def add(
     line_style: Optional[dict] = None,
     tick_style: Optional[dict] = None,
     label_style: Optional[dict] = None,
+    draw_tick_segment: bool = False,
 ) -> UserIsoline:
     """Attach a user-anchored isoline to ``ax`` and return its spec.
 
@@ -343,6 +339,9 @@ def add(
     take it back off. The isoline's artists live on the axes and auto-
     update via ``ax.draw`` — the same zoom/pan cycle that refreshes the
     grid refreshes these too.
+
+    ``draw_tick_segment`` controls the short tangent segment at the
+    spine crossing. It defaults to ``False``.
 
     Font family/size for the optional ``label`` inherit from matplotlib's
     rcParams by default. Override via ``label_style={'fontsize': 11,
@@ -391,6 +390,7 @@ def add(
         label_text=label or "",
         line_style=ls,
         tick_style=ts,
+        draw_tick_segment=bool(draw_tick_segment),
     )
     return spec
 
@@ -425,21 +425,36 @@ def update(ax, spec: UserIsoline, g: float) -> None:
     # Crossing in data coords, derived from (edge, pos). For horizontal
     # velocity lines the crossing is (xmin, value); otherwise compute
     # the family's (f, v) for the given spine position.
-    crossing_data = _crossing_to_data(spec.family, spec.value, edge, pos, g)
-
-    # Two data-space points on the line to sample its tangent — just
-    # take the visible segment endpoints.
-    xs, ys = _tangent_tick_endpoints(
-        ax, crossing_data, ((f0, v0), (f1, v1)), edge,
+    crossing_data = _crossing_to_data(
+        spec.family, spec.value, edge, pos, g, xlim,
     )
-    spec.tick.set_data(xs, ys)
-    spec.tick.set_visible(True)
 
-    if spec.label is not None:
+    xs = ys = None
+    if spec.draw_tick_segment or spec.label is not None:
+        # Two data-space points on the line to sample its tangent — just
+        # take the visible segment endpoints.
+        xs, ys = _tangent_tick_endpoints(
+            ax, crossing_data, ((f0, v0), (f1, v1)), edge,
+        )
+
+    if spec.draw_tick_segment and xs is not None and ys is not None:
+        spec.tick.set_data(xs, ys)
+        spec.tick.set_visible(True)
+    else:
+        spec.tick.set_visible(False)
+
+    if spec.label is not None and xs is not None and ys is not None:
         _position_label(ax, spec, crossing_data, edge, xs, ys)
 
 
-def _crossing_to_data(family: str, value: float, edge: str, pos: float, g: float):
+def _crossing_to_data(
+    family: str,
+    value: float,
+    edge: str,
+    pos: float,
+    g: float,
+    xlim,
+):
     """Turn ``(edge, pos)`` back into a ``(f, v)`` pair in data coords.
     ``pos`` is the spine-coord (x for top/bottom, y for left/right)."""
     if edge in ("top", "bottom"):
@@ -454,24 +469,20 @@ def _crossing_to_data(family: str, value: float, edge: str, pos: float, g: float
     # left / right
     v = pos
     if family == "vel":
-        # Horizontal line; x is just the spine coord.
-        x = 0.0  # placeholder; update pulls xlim[0] or [1] directly
-        # For left, x = xmin; for right, x = xmax. The caller has xlim
-        # available but we'll shadow that by using a small delta below.
-        # Simpler: the caller never uses the x here for vel except as
-        # the crossing point. Return a sensible placeholder at the spine.
-        x = 1.0  # overwritten by caller if needed
+        # Horizontal: anchor to the actual active spine so pan/zoom keeps
+        # the crossing attached to the edge.
+        if edge == "left":
+            return (xlim[0], v)
+        if edge == "right":
+            return (xlim[1], v)
+        return (xlim[0], v)
     # Solve family equation for f given v
     if family == "disp":
         f = v / (_TWO_PI * value)
     elif family == "accel":
         f = (value * g) / (_TWO_PI * v)
     else:  # vel
-        # Horizontal: tick on left spine crosses at (xmin, value).
-        # Caller supplies the spine x via edge convention; use a small
-        # marker here and let _tangent_tick_endpoints handle the
-        # horizontal-line degenerate path.
-        f = 1.0  # arbitrary — tangent computation uses the VISIBLE segment
+        f = xlim[0]
     return (f, v)
 
 
@@ -479,11 +490,12 @@ def _position_label(ax, spec: UserIsoline, crossing_data, edge: str,
                     tick_xs, tick_ys) -> None:
     """Place label just past the tick's inner end, in display coords so
     the offset is aspect-independent. Rotation is computed from the
-    tick's direction for visual coherence with the line."""
-    # Use the inner end of the tick (index 1) as the label anchor, offset
-    # further along the tangent by a small pad so the text doesn't touch
-    # the tick line.
-    pad_pt = 4.0
+    tick's direction for visual coherence with the line.
+
+    Offset is applied strictly along the tangent direction and scaled
+    by label size so longer labels are pushed farther from the spine
+    crossing (avoids the "only first character visible" clipping case).
+    """
     ex, ey = tick_xs[1], tick_ys[1]
     sx, sy = tick_xs[0], tick_ys[0]
     dx, dy = ex - sx, ey - sy
@@ -493,11 +505,6 @@ def _position_label(ax, spec: UserIsoline, crossing_data, edge: str,
     else:
         ux, uy = dx / mag, dy / mag
 
-    # Anchor is the tick's inner end plus a small pad along the same
-    # direction. In display coords so independent of data space.
-    anchor_x = ex + ux * pad_pt
-    anchor_y = ey + uy * pad_pt
-
     # Rotation: tangent angle, clamped to [-90, 90] so text stays upright.
     angle = math.degrees(math.atan2(dy, dx))
     if angle > 90:
@@ -506,14 +513,54 @@ def _position_label(ax, spec: UserIsoline, crossing_data, edge: str,
         angle += 180
 
     spec.label.set_transform(IdentityTransform())
-    spec.label.set_position((anchor_x, anchor_y))
     spec.label.set_rotation(angle)
     spec.label.set_rotation_mode("anchor")
-    # Anchor halfway along the text so the tangent pad lands at the
-    # text's center — the label reads like a continuation of the tick.
-    spec.label.set_ha("left")
+    # Center anchoring keeps size-based tangent offset symmetric.
+    spec.label.set_ha("center")
     spec.label.set_va("center")
     spec.label.set_text(spec.label_text)
+
+    # First pass at crossing to measure text size in display space.
+    spec.label.set_position((ex, ey))
+    renderer = None
+    try:
+        renderer = ax.figure.canvas.get_renderer()
+    except Exception:
+        renderer = None
+
+    # Tangent-only offset: base gap + projected half-size along tangent.
+    base_pad_px = 3.0
+    offset_t = base_pad_px
+    if renderer is not None:
+        bb = spec.label.get_window_extent(renderer=renderer)
+        half_extent_t = 0.5 * (abs(ux) * bb.width + abs(uy) * bb.height)
+        offset_t += half_extent_t
+
+    anchor_x = ex + ux * offset_t
+    anchor_y = ey + uy * offset_t
+    spec.label.set_position((anchor_x, anchor_y))
+
+    # If any part still falls outside the axes, push farther along the
+    # same tangent (never perpendicular) until inside with a small margin.
+    if renderer is not None:
+        bb = spec.label.get_window_extent(renderer=renderer)
+        axbb = ax.bbox
+        m = 2.0
+        extra_t = 0.0
+        if bb.x0 < axbb.x0 + m and ux > 1e-12:
+            extra_t = max(extra_t, (axbb.x0 + m - bb.x0) / ux)
+        if bb.x1 > axbb.x1 - m and ux < -1e-12:
+            extra_t = max(extra_t, (bb.x1 - (axbb.x1 - m)) / (-ux))
+        if bb.y0 < axbb.y0 + m and uy > 1e-12:
+            extra_t = max(extra_t, (axbb.y0 + m - bb.y0) / uy)
+        if bb.y1 > axbb.y1 - m and uy < -1e-12:
+            extra_t = max(extra_t, (bb.y1 - (axbb.y1 - m)) / (-uy))
+        if extra_t > 0:
+            spec.label.set_position((
+                anchor_x + ux * extra_t,
+                anchor_y + uy * extra_t,
+            ))
+
     spec.label.set_visible(True)
 
 

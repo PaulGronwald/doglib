@@ -443,6 +443,7 @@ class TripartiteAxes(Axes):
         label: str | None = None,
         line_style: dict | None = None,
         tick_style: dict | None = None,
+        draw_tick_segment: bool = False,
     ) -> _isolines.UserIsoline:
         """Attach a permanent isoline for a specific constant value.
 
@@ -454,8 +455,9 @@ class TripartiteAxes(Axes):
 
         The returned :class:`~triplot.isolines.UserIsoline` carries the
         matplotlib artists — ``.line`` (the diagonal itself), ``.tick``
-        (the mirror-spine tick), and ``.label`` (optional text). Tweak
-        style directly, e.g.::
+        (the optional tangent tick segment), and ``.label`` (optional
+        text). ``draw_tick_segment`` defaults to ``False``. Tweak style
+        directly, e.g.::
 
             iso = ax.add_isoline('disp', 0.5, label='0.5 in', line_style={'color': 'red'})
             iso.line.set_linewidth(2.0)
@@ -469,6 +471,7 @@ class TripartiteAxes(Axes):
             label=label,
             line_style=line_style,
             tick_style=tick_style,
+            draw_tick_segment=draw_tick_segment,
         )
         self._user_isolines.append(spec)
         # Update once now so the spec is visible immediately — the

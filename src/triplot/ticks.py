@@ -27,6 +27,24 @@ from __future__ import annotations
 
 import math
 
+# Double-precision decade bounds. Values outside this range under/overflow
+# for 10**k and should be skipped by tick generation.
+_POW10_MIN_EXP = -323
+_POW10_MAX_EXP = 308
+
+
+def _safe_pow10(k: int):
+    """Return 10**k when representable as finite float, else None."""
+    if k < _POW10_MIN_EXP or k > _POW10_MAX_EXP:
+        return None
+    try:
+        v = 10.0 ** k
+    except OverflowError:
+        return None
+    if not math.isfinite(v) or v <= 0:
+        return None
+    return v
+
 # Progressive ladders, coarse -> fine. Each tuple is the set of mantissas
 # (1 <= m < 10) emitted per decade.
 _LADDERS: tuple[tuple[float, ...], ...] = (
@@ -61,7 +79,14 @@ def _enum_ladder(
     emits 10^0, 10^5, 10^10, ... rather than whichever decade happens
     to fall at the start of the viewport.
     """
-    if lo <= 0 or hi <= 0 or hi < lo or decade_step < 1:
+    if (
+        lo <= 0
+        or hi <= 0
+        or hi < lo
+        or decade_step < 1
+        or not math.isfinite(lo)
+        or not math.isfinite(hi)
+    ):
         return []
     kmin = math.floor(math.log10(lo))
     kmax = math.ceil(math.log10(hi))
@@ -72,7 +97,9 @@ def _enum_ladder(
     k_start = (kmin - 1) - ((kmin - 1) % decade_step)
     k_end = kmax + 2
     for k in range(k_start, k_end, decade_step):
-        base = 10.0 ** k
+        base = _safe_pow10(k)
+        if base is None:
+            continue
         for m in ladder:
             v = m * base
             if lo <= v <= hi:
@@ -197,7 +224,13 @@ def major_minor_split(
 
     Returns ``(majors, minors)`` — both sorted ascending, disjoint.
     """
-    if lo <= 0 or hi <= 0 or hi <= lo:
+    if (
+        lo <= 0
+        or hi <= 0
+        or hi <= lo
+        or not math.isfinite(lo)
+        or not math.isfinite(hi)
+    ):
         return [], []
 
     span = math.log10(hi) - math.log10(lo)
@@ -269,7 +302,9 @@ def major_minor_split(
     k_start = kmin - (kmin % step) - step
     k_end = kmax + step + 1
     for k in range(k_start, k_end, step):
-        v = 10.0 ** k
+        v = _safe_pow10(k)
+        if v is None:
+            continue
         if lo <= v <= hi:
             majors.append(v)
 
@@ -285,7 +320,9 @@ def major_minor_split(
     if step == 1:
         mantissas = (2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
         for k in range(kmin - 1, kmax + 2):
-            base = 10.0 ** k
+            base = _safe_pow10(k)
+            if base is None:
+                continue
             for m in mantissas:
                 v = m * base
                 if lo <= v <= hi:
@@ -303,7 +340,9 @@ def major_minor_split(
         for k in range(k_start, k_end, minor_step):
             if k in major_set:
                 continue
-            v = 10.0 ** k
+            v = _safe_pow10(k)
+            if v is None:
+                continue
             if lo <= v <= hi:
                 minors.append(v)
 
@@ -315,8 +354,20 @@ def overflow_pad(lo: float, hi: float) -> tuple[float, float]:
     next tick just outside the viewport is also emitted — used by the
     edge-label / overflow-tick renderer to keep labels anchored while the
     user pans / resizes through the tick boundary."""
-    if lo <= 0 or hi <= 0 or hi <= lo:
+    if (
+        lo <= 0
+        or hi <= 0
+        or hi <= lo
+        or not math.isfinite(lo)
+        or not math.isfinite(hi)
+    ):
         return lo, hi
     span = math.log10(hi) - math.log10(lo)
+    if not math.isfinite(span):
+        return lo, hi
     pad = max(span * 0.15, 0.08)  # ~15% of span, floor 0.08 decade
-    return 10.0 ** (math.log10(lo) - pad), 10.0 ** (math.log10(hi) + pad)
+    lo_exp = math.log10(lo) - pad
+    hi_exp = math.log10(hi) + pad
+    lo_exp = max(float(_POW10_MIN_EXP), lo_exp)
+    hi_exp = min(float(_POW10_MAX_EXP), hi_exp)
+    return 10.0 ** lo_exp, 10.0 ** hi_exp

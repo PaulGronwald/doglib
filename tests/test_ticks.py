@@ -131,3 +131,17 @@ def test_gridline_count_bounded_at_extreme_zoom():
         assert n <= 120, f"expected <=120 lines at 100-decade zoom, got {n}"
         assert n >= 2, f"expected >=2 lines at 100-decade zoom, got {n}"
     plt.close(fig)
+
+
+def test_major_minor_split_nonfinite_inputs_do_not_crash():
+    assert ticks.major_minor_split(float("inf"), 10.0) == ([], [])
+    assert ticks.major_minor_split(1.0, float("inf")) == ([], [])
+    assert ticks.major_minor_split(float("nan"), 10.0) == ([], [])
+    assert ticks.major_minor_split(1.0, float("nan")) == ([], [])
+
+
+def test_major_minor_split_huge_finite_range_stays_finite():
+    majors, minors = ticks.major_minor_split(1e-300, 1e300)
+    assert len(majors) > 0
+    assert all(math.isfinite(v) and v > 0 for v in majors)
+    assert all(math.isfinite(v) and v > 0 for v in minors)

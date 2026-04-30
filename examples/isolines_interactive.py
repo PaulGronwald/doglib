@@ -2,7 +2,7 @@
 
 Two isoline flavours coexist on this plot:
 
-    (A) ax.add_isoline(family, value, label=...)
+    (A) ax.add_isoline(family, value)
 
         A **full-span** line — always reaches both viewport edges
         regardless of zoom level. The clipped segment recomputes on
@@ -23,13 +23,13 @@ Two isoline flavours coexist on this plot:
         isoline. Rotation tracks the on-screen slope so it stays
         coherent at any aspect / zoom.
 
+        ``label`` defaults to ``None`` — auto-generates from the value
+        and the axes unit system (e.g. ``"0.5 in"``, ``"2 g"``).
+        Pass ``label=False`` to suppress, or a ``str`` to override.
         Labels use a light white glyph halo (patheffects stroke) for
-        readability over the grid, and inherit font family / size from
-        matplotlib's rcParams by default — set a project-wide font
-        once and every triplot element picks it up. Override
-        per-isoline via ``label_style={...}``.
+        readability over the grid, and inherit font from rcParams.
 
-    (B) ax.add_span_isoline(family, value, f_range=(lo, hi), label=...)
+    (B) ax.add_span_isoline(family, value, f_range=(lo, hi))
 
         A **finite** line bounded on both ends by ``f_range``, with a
         text label that sticks to the geometric midpoint of whatever
@@ -38,6 +38,9 @@ Two isoline flavours coexist on this plot:
         visible middle — "squish" behaviour. Pan so the line leaves the
         viewport entirely and the label hides (so you don't see phantom
         text over empty grid).
+
+        Same ``label`` convention: ``None`` auto-generates, ``False``
+        suppresses, ``str`` overrides.
 
 Both return matplotlib artists directly — ``.line``, ``.tick``,
 ``.label`` — so you can restyle in place without any triplot-specific
@@ -95,28 +98,25 @@ def main():
     # ------------------------------------------------------------------
     # (A) full-span isolines — viewport-spanning with mirror-spine ticks
     # ------------------------------------------------------------------
-    # Design criterion spec from the API: these are the permanent
-    # "constraint lines" a caller overlays on top of a plot — allowable
-    # stress, code-limit acceleration, headroom displacement, etc. They
-    # always fill the visible viewport because the segment is recomputed
-    # from the current xlim/ylim on every draw.
+    # label=None (default): auto-generated from value + unit system.
     d_iso = ax.add_isoline(
         "disp", 0.5,
-        label="d = 0.5 in",
         draw_tick_segment=True,
         line_style={"color": "#c0392b", "linewidth": 1.4, "linestyle": "-"},
         tick_style={"color": "#c0392b", "linewidth": 1.2},
     )
-    a_iso = ax.add_isoline(
+    # label=False: suppress label entirely.
+    ax.add_isoline(
         "accel", 2.0,
-        label="a = 2 g",
+        label=False,
         draw_tick_segment=True,
         line_style={"color": "#2980b9", "linewidth": 1.4, "linestyle": "-"},
         tick_style={"color": "#2980b9", "linewidth": 1.2},
     )
-    v_iso = ax.add_isoline(
+    # label="str": explicit override.
+    ax.add_isoline(
         "vel", 10.0,
-        label="v = 10 in/s",
+        label="allowable pv",
         draw_tick_segment=True,
         line_style={"color": "#27ae60", "linewidth": 1.4, "linestyle": "-"},
         tick_style={"color": "#27ae60", "linewidth": 1.2},
@@ -133,21 +133,19 @@ def main():
     # Use case: marking a regulatory or test range that only applies
     # over a specific frequency band. Pan the viewport left/right and
     # watch the label slide along the visible part of the line.
-    ax.add_span_isoline(
+    ax.add_span_isoline(          # auto-label
         "accel", 5.0,
         f_range=(5.0, 200.0),
-        label="high-g zone (5-200 Hz)",
         line_style={"color": "#8e44ad", "linewidth": 1.8},
         label_style={"color": "#8e44ad", "fontsize": 9, "fontweight": "bold"},
     )
-    ax.add_span_isoline(
+    ax.add_span_isoline(          # auto-label
         "disp", 0.05,
         f_range=(20.0, 500.0),
-        label="disp limit",
         line_style={"color": "#d35400", "linewidth": 1.6},
         label_style={"color": "#d35400", "fontsize": 9},
     )
-    ax.add_span_isoline(
+    ax.add_span_isoline(          # explicit override
         "vel", 30.0,
         f_range=(10.0, 300.0),
         label="v = 30 in/s band",

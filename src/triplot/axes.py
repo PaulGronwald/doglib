@@ -440,7 +440,7 @@ class TripartiteAxes(Axes):
         family: str,
         value: float,
         *,
-        label: str | None = None,
+        label=None,
         line_style: dict | None = None,
         tick_style: dict | None = None,
         draw_tick_segment: bool = False,
@@ -450,16 +450,23 @@ class TripartiteAxes(Axes):
         ``family`` is one of ``'disp'`` / ``'displacement'``,
         ``'accel'`` / ``'acceleration'``, ``'vel'`` / ``'velocity'``
         (aliases documented in :mod:`triplot.isolines`). ``value`` is
-        in the family's label units (inches for imperial disp, g's for
-        ``accel_in_g``, in/s for imperial velocity).
+        in the family's native units (inches for imperial disp, g for
+        accel, in/s for imperial velocity).
+
+        ``label`` controls the annotation near the spine crossing:
+
+        * ``None`` (default) — auto-generated from ``value`` and the
+          axes unit system, e.g. ``"0.5 in"`` or ``"2 g"``.
+        * ``False`` — no label.
+        * a ``str`` — use that text verbatim.
 
         The returned :class:`~triplot.isolines.UserIsoline` carries the
         matplotlib artists — ``.line`` (the diagonal itself), ``.tick``
-        (the optional tangent tick segment), and ``.label`` (optional
-        text). ``draw_tick_segment`` defaults to ``False``. Tweak style
-        directly, e.g.::
+        (the optional tangent tick segment), and ``.label`` (text or
+        ``None`` when suppressed). ``draw_tick_segment`` defaults to
+        ``False``. Tweak style directly, e.g.::
 
-            iso = ax.add_isoline('disp', 0.5, label='0.5 in', line_style={'color': 'red'})
+            iso = ax.add_isoline('disp', 0.5, line_style={'color': 'red'})
             iso.line.set_linewidth(2.0)
 
         The artists re-compute on every zoom/pan so the tick follows
@@ -479,7 +486,7 @@ class TripartiteAxes(Axes):
         # already-displayed figure expects the isoline to appear
         # without an extra redraw.
         g = self._core._g_value()
-        _isolines.update(self, spec, g)
+        _isolines.update(self, spec, g, self._core.units)
         self._invalidate_cache()
         return spec
 
@@ -510,7 +517,7 @@ class TripartiteAxes(Axes):
         value: float,
         f_range: tuple[float, float],
         *,
-        label: str | None = None,
+        label=None,
         line_style: dict | None = None,
         label_style: dict | None = None,
     ) -> _isolines.UserSpanIsoline:
@@ -521,12 +528,13 @@ class TripartiteAxes(Axes):
           * the line is drawn only between ``f_range[0]`` and
             ``f_range[1]`` on the frequency axis
           * no mirror-spine tick — the identifier is an in-plot text
-            label instead
-          * the label sits at the geometric midpoint of whichever
-            portion of the line is currently visible, so as you pan and
-            the line crops, the label slides to stay centered on what's
-            on screen; when the line leaves the viewport entirely the
-            label hides
+            label that rides the visible midpoint instead
+          * the label slides along the visible portion as the viewport
+            pans; hides when the line leaves entirely
+
+        ``label`` follows the same convention as :meth:`add_isoline`:
+        ``None`` (default) auto-generates from value + unit system,
+        ``False`` suppresses, a ``str`` is used verbatim.
 
         Same family aliases as :meth:`add_isoline`
         (``'disp'``/``'accel'``/``'vel'``). Returns a
@@ -539,7 +547,7 @@ class TripartiteAxes(Axes):
         )
         self._user_span_isolines.append(spec)
         g = self._core._g_value()
-        _isolines.update_span(self, spec, g)
+        _isolines.update_span(self, spec, g, self._core.units)
         self._invalidate_cache()
         return spec
 
@@ -553,15 +561,16 @@ class TripartiteAxes(Axes):
         if not self._user_isolines and not self._user_span_isolines:
             return
         g = self._core._g_value()
+        units = self._core.units
         for spec in self._user_isolines:
             try:
-                _isolines.update(self, spec, g)
+                _isolines.update(self, spec, g, units)
             except Exception:
                 # Never let a single bad isoline break the draw loop.
                 continue
         for spec in self._user_span_isolines:
             try:
-                _isolines.update_span(self, spec, g)
+                _isolines.update_span(self, spec, g, units)
             except Exception:
                 continue
 

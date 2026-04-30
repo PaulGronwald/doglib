@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from matplotlib import patheffects
 from matplotlib.lines import Line2D
@@ -90,6 +90,26 @@ _LABEL_STROKE = [
 ]
 
 
+def _extract_unit(axis_label: str) -> str:
+    """Extract bracketed unit from an axis label: 'Displacement [in]' → 'in'."""
+    lo = axis_label.find("[")
+    hi = axis_label.find("]")
+    if 0 <= lo < hi:
+        return axis_label[lo + 1 : hi]
+    return ""
+
+
+def _auto_label_text(family: str, value: float, units) -> str:
+    """Format value with its unit string derived from the triplot unit system."""
+    if family == "disp":
+        unit = _extract_unit(units.disp_label)
+    elif family == "accel":
+        unit = _extract_unit(units.accel_label)
+    else:  # vel
+        unit = _extract_unit(units.vel_label)
+    return f"{value:g} {unit}".strip() if unit else f"{value:g}"
+
+
 @dataclass
 class UserIsoline:
     """Spec + artist handles for one user-anchored isoline.
@@ -108,6 +128,7 @@ class UserIsoline:
     tick: Line2D
     label: Optional[Text] = None
     label_text: str = ""
+    auto_label: bool = True
     line_style: dict = field(default_factory=dict)
     tick_style: dict = field(default_factory=dict)
     draw_tick_segment: bool = False
@@ -327,7 +348,7 @@ def add(
     family: str,
     value: float,
     *,
-    label: Optional[str] = None,
+    label=None,
     line_style: Optional[dict] = None,
     tick_style: Optional[dict] = None,
     label_style: Optional[dict] = None,
@@ -340,12 +361,18 @@ def add(
     update via ``ax.draw`` — the same zoom/pan cycle that refreshes the
     grid refreshes these too.
 
+    ``label`` controls the annotation text:
+
+    * ``None`` (default) — auto-generated from ``value`` and the axes
+      unit system (e.g. ``"0.5 in"`` or ``"2 g"``).
+    * ``False`` — suppress label entirely.
+    * a ``str`` — use that string verbatim.
+
     ``draw_tick_segment`` controls the short tangent segment at the
     spine crossing. It defaults to ``False``.
 
-    Font family/size for the optional ``label`` inherit from matplotlib's
-    rcParams by default. Override via ``label_style={'fontsize': 11,
-    'fontweight': 'bold', ...}`` — any ``Text`` kwarg works.
+    Font family/size for the label inherit from matplotlib's rcParams by
+    default. Override via ``label_style={'fontsize': 11, ...}``.
     """
     fam = _canonical_family(family)
     if value <= 0:
@@ -361,9 +388,10 @@ def add(
     line = _make_line(ax, ls)
     tick = _make_tick(ax, ts)
 
+    auto_label = label is None
     text: Optional[Text] = None
-    if label:
-        label_kwargs = dict(
+    if label is not False:
+        label_kwargs: dict[str, Any] = dict(
             color=ts.get("color", "#222"),
             fontsize=9, ha="left", va="center",
         )
@@ -373,7 +401,7 @@ def add(
         # default carries through so the plot picks up whatever font
         # the caller has configured globally. Override via
         # label_style={'family': 'serif', ...} if needed.
-        text = Text(0, 0, label, **label_kwargs)
+        text = Text(0, 0, label if isinstance(label, str) else "", **label_kwargs)
         text.set_path_effects(list(_LABEL_STROKE))
         try:
             text.set_in_layout(False)
@@ -387,7 +415,8 @@ def add(
         line=line,
         tick=tick,
         label=text,
-        label_text=label or "",
+        label_text=label if isinstance(label, str) else "",
+        auto_label=auto_label,
         line_style=ls,
         tick_style=ts,
         draw_tick_segment=bool(draw_tick_segment),
@@ -395,11 +424,13 @@ def add(
     return spec
 
 
-def update(ax, spec: UserIsoline, g: float) -> None:
+def update(ax, spec: UserIsoline, g: float, units=None) -> None:
     """Recompute segment + rotated tangent tick for ``spec`` from the
     current axes viewport. Called on every draw; cheap enough to run
     per-isoline per frame.
     """
+    if spec.auto_label and units is not None and spec.label is not None:
+        spec.label_text = _auto_label_text(spec.family, spec.value, units)
     xlim = ax.get_xlim()
     ylim = ax.get_ylim()
     if xlim[0] <= 0 or ylim[0] <= 0 or xlim[1] <= xlim[0] or ylim[1] <= ylim[0]:
@@ -602,8 +633,9 @@ class UserSpanIsoline:
     f_start: float
     f_end: float
     line: Line2D
-    label: Text
-    label_text: str
+    label: Optional[Text] = None
+    label_text: str = ""
+    auto_label: bool = True
     line_style: dict = field(default_factory=dict)
     label_style: dict = field(default_factory=dict)
 
@@ -708,7 +740,7 @@ def add_span(
     value: float,
     f_range: tuple[float, float],
     *,
-    label: Optional[str] = None,
+    label=None,
     line_style: Optional[dict] = None,
     label_style: Optional[dict] = None,
 ) -> UserSpanIsoline:
@@ -718,6 +750,13 @@ def add_span(
     mirror-spine tick, this variant is bounded on both ends by
     ``f_range = (f_start, f_end)`` and carries an in-plot text label
     rather than an axis tick.
+
+    ``label`` controls the annotation text:
+
+    * ``None`` (default) — auto-generated from ``value`` and the axes
+      unit system.
+    * ``False`` — suppress label entirely.
+    * a ``str`` — use that string verbatim.
 
     Label behaviour:
       * rotates to match the line's on-screen slope (pixel-space angle,
@@ -741,18 +780,21 @@ def add_span(
     if label_style:
         tx_style.update(label_style)
 
+    auto_label = label is None
     line = _make_line(ax, ls)
-    text = Text(0, 0, label or "", **tx_style)
-    text.set_ha("center")
-    text.set_va("center")
-    text.set_rotation_mode("anchor")
-    # Same glyph halo as the full-span tick label for consistency.
-    text.set_path_effects(list(_LABEL_STROKE))
-    try:
-        text.set_in_layout(False)
-    except AttributeError:
-        pass
-    ax.add_artist(text)
+    text: Optional[Text] = None
+    if label is not False:
+        text = Text(0, 0, label if isinstance(label, str) else "", **tx_style)
+        text.set_ha("center")
+        text.set_va("center")
+        text.set_rotation_mode("anchor")
+        # Same glyph halo as the full-span tick label for consistency.
+        text.set_path_effects(list(_LABEL_STROKE))
+        try:
+            text.set_in_layout(False)
+        except AttributeError:
+            pass
+        ax.add_artist(text)
 
     spec = UserSpanIsoline(
         family=fam,
@@ -761,16 +803,19 @@ def add_span(
         f_end=float(f_range[1]),
         line=line,
         label=text,
-        label_text=label or "",
+        label_text=label if isinstance(label, str) else "",
+        auto_label=auto_label,
         line_style=ls,
         label_style=tx_style,
     )
     return spec
 
 
-def update_span(ax, spec: UserSpanIsoline, g: float) -> None:
+def update_span(ax, spec: UserSpanIsoline, g: float, units=None) -> None:
     """Recompute the visible portion of ``spec`` and reposition its
     label. Cheap — runs per-frame."""
+    if spec.auto_label and units is not None and spec.label is not None:
+        spec.label_text = _auto_label_text(spec.family, spec.value, units)
     xlim = ax.get_xlim()
     ylim = ax.get_ylim()
     if xlim[0] <= 0 or ylim[0] <= 0 or xlim[1] <= xlim[0] or ylim[1] <= ylim[0]:
@@ -789,8 +834,9 @@ def update_span(ax, spec: UserSpanIsoline, g: float) -> None:
     spec.line.set_data([fa, fb], [va, vb])
     spec.line.set_visible(True)
 
-    if not spec.label_text:
-        spec.label.set_visible(False)
+    if spec.label is None or not spec.label_text:
+        if spec.label is not None:
+            spec.label.set_visible(False)
         return
 
     # Midpoint of the visible portion in log space (== geometric midpoint
@@ -823,4 +869,5 @@ def update_span(ax, spec: UserSpanIsoline, g: float) -> None:
 
 def _hide_span(spec: UserSpanIsoline) -> None:
     spec.line.set_visible(False)
-    spec.label.set_visible(False)
+    if spec.label is not None:
+        spec.label.set_visible(False)
